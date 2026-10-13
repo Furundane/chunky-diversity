@@ -4,6 +4,7 @@
 #define CHUNKYCLPLUGIN_BLOCK_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "utils.h"
 #include "constants.h"
@@ -16,10 +17,10 @@ typedef struct {
     __global const int* blockPalette;
     __global const int* quadModels;
     __global const int* aabbModels;
-    MaterialPalette* materialPalette;
+    __private MaterialPalette* materialPalette;
 } BlockPalette;
 
-BlockPalette BlockPalette_new(__global const int* blockPalette, __global const int* quadModels, __global const int* aabbModels, MaterialPalette* materialPalette) {
+BlockPalette BlockPalette_new(__global const int* blockPalette, __global const int* quadModels, __global const int* aabbModels, __private MaterialPalette* materialPalette) {
     BlockPalette p;
     p.blockPalette = blockPalette;
     p.quadModels = quadModels;
@@ -28,7 +29,7 @@ BlockPalette BlockPalette_new(__global const int* blockPalette, __global const i
     return p;
 }
 
-bool BlockPalette_intersectNormalizedBlock(BlockPalette self, image2d_array_t atlas, MaterialPalette materialPalette, int block, int3 blockPosition, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool BlockPalette_intersectNormalizedBlock(BlockPalette self, image2d_array_t atlas, MaterialPalette materialPalette, int block, int3 blockPosition, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     // ANY_TYPE. Should not be intersected.
     if (block == 0x7FFFFFFE) {
         return false;

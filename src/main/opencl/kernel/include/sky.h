@@ -2,6 +2,7 @@
 #define CHUNKYCLPLUGIN_SKY_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "textureAtlas.h"
 #include "random.h"
@@ -36,18 +37,18 @@ Sun Sun_new(__global const int* data) {
     sun.luminosity = as_float(data[6]);
     sun.color = colorFromArgb(data[7]);
     sun.radius = as_float(data[8]);
-    sun.emittance = (float3) (as_float(data[9]), as_float(data[10]), as_float(data[11]));
+    sun.emittance = make_float3(as_float(data[9]), as_float(data[10]), as_float(data[11]));
     sun.luminosityPdf = as_float(data[12]);
     
     float phi = as_float(data[4]);
     float theta = as_float(data[5]);
     float r = fabs(cos(phi));
     
-    sun.sw = (float3) (cos(theta) * r, sin(phi), sin(theta) * r);
+    sun.sw = make_float3(cos(theta) * r, sin(phi), sin(theta) * r);
     if (fabs(sun.sw.x) > 0.1f) {
-        sun.su = (float3) (0, 1, 0);
+        sun.su = make_float3(0, 1, 0);
     } else {
-        sun.su = (float3) (1, 0, 0);
+        sun.su = make_float3(1, 0, 0);
     }
     sun.sv = normalize(cross(sun.sw, sun.su));
     sun.su = cross(sun.sv, sun.sw);
@@ -55,7 +56,7 @@ Sun Sun_new(__global const int* data) {
     return sun;
 }
 
-bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, int mode, MaterialSample* sample) {
+bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, int mode, __private MaterialSample* sample) {
     float3 direction = ray.direction;
 
     if (mode == SUN_NONE || !(self.flags & 1) || dot(direction, self.sw) < 0.5f) {
@@ -97,9 +98,15 @@ float3 Sun_sampleDirection(Sun self, Random random) {
     return normalize(self.su * (cos(phi) * sin_a) + self.sv * (sin(phi) * sin_a) + self.sw * cos_a);
 }
 
+#ifdef __METAL_VERSION__
+constexpr sampler skySampler(coord::normalized, address::mirrored_repeat, filter::linear);
+#define Sky_read(texture, uv) (texture).sample(skySampler, (uv))
+#else
 const sampler_t skySampler = CLK_NORMALIZED_COORDS_TRUE  | CLK_ADDRESS_MIRRORED_REPEAT | CLK_FILTER_LINEAR;
+#define Sky_read(texture, uv) read_imagef((texture), skySampler, (uv))
+#endif
 
-void Sky_intersect(image2d_t skyTexture, float skyIntensity, Ray ray, MaterialSample* sample) {
+void Sky_intersect(image2d_t skyTexture, float skyIntensity, Ray ray, __private MaterialSample* sample) {
     float3 direction = ray.direction;
 
     float theta = atan2(direction.z, direction.x);
@@ -107,7 +114,7 @@ void Sky_intersect(image2d_t skyTexture, float skyIntensity, Ray ray, MaterialSa
     theta = fmod(fmod(theta, 1) + 1, 1);
     float phi = (asin(clamp(direction.y, -1.0f, 1.0f)) + M_PI_2_F) * M_1_PI_F;
 
-    sample->color = read_imagef(skyTexture, skySampler, (float2) (theta, phi)) * skyIntensity;
+    sample->color = Sky_read(skyTexture, make_float2(theta, phi)) * skyIntensity;
     sample->emittance = 1.0;
 }
 

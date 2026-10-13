@@ -1,7 +1,9 @@
 #ifndef CHUNKYCLPLUGIN_RANDOMNESS_H
 #define CHUNKYCLPLUGIN_RANDOMNESS_H
 
-typedef unsigned int* Random;
+#include "compat.h"
+
+typedef unsigned __private int* Random;
 
 // PCG hash from
 // https://www.reedbeta.com/blog/hash-functions-for-gpu-rendering/

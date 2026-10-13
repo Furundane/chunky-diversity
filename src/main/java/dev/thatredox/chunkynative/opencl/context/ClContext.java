@@ -4,9 +4,6 @@ import se.llbit.log.Log;
 import org.jocl.*;
 
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.function.Function;
 
 import static org.jocl.CL.*;
 
@@ -20,7 +17,9 @@ public class ClContext {
         this.device = device;
         this.deviceArray = new cl_device_id[] { device.device };
 
+        // Apple's OpenCL rejects an empty property list with CL_INVALID_VALUE.
         cl_context_properties contextProperties = new cl_context_properties();
+        contextProperties.addProperty(CL_CONTEXT_PLATFORM, device.platform);
         this.context = clCreateContext(contextProperties, 1, deviceArray,
                 null, null, null);
 
@@ -47,46 +46,22 @@ public class ClContext {
     /**
      * Load an OpenCL program.
      *
-     * @param sourceReader  Function to read source files from filenames.
-     * @param kernelName    Kernel entrypoint filename.
+     * @param source  Program source with all headers inlined (see {@link KernelLoader#loadSource}).
+     *                Apple's OpenCL aborts the process in clCompileProgram when headers are passed
+     *                as embedded programs, so the program is built from one source string.
      * @return OpenCL program.
      */
-    public cl_program loadProgram(Function<String, String> sourceReader, String kernelName) {
-        // Load kernel
-        String kernel = sourceReader.apply(kernelName);
-        cl_program kernelProgram = clCreateProgramWithSource(context, 1, new String[] { kernel },
+    public cl_program loadProgram(String source) {
+        cl_program kernelProgram = clCreateProgramWithSource(context, 1, new String[] { source },
                 null, null);
 
-        // Search for include headers
-        HashMap<String, cl_program> headerFiles = new HashMap<>();
-
-        // Load headers
-        readHeaders(kernel, headerFiles);
-
-        boolean newHeaders = true;
-        while (newHeaders) {
-            newHeaders = false;
-            HashMap<String, cl_program> newHeaderFiles = new HashMap<>();
-            for (Map.Entry<String, cl_program> header : headerFiles.entrySet()) {
-                if (header.getValue() == null && header.getKey().endsWith(".h")) {
-                    String headerFile = sourceReader.apply(header.getKey());
-                    header.setValue(clCreateProgramWithSource(context, 1, new String[] {headerFile}, null, null));
-                    readHeaders(headerFile, newHeaderFiles);
-                }
-            }
-
-            for (String header : newHeaderFiles.keySet()) {
-                newHeaders |= headerFiles.putIfAbsent(header, null) == null;
-            }
-        }
-
-        String[] includeNames = headerFiles.keySet().toArray(new String[0]);
-        cl_program[] includePrograms = new cl_program[includeNames.length];
-        Arrays.setAll(includePrograms, i -> headerFiles.get(includeNames[i]));
-
         CL.setExceptionsEnabled(false);
-        int code = clCompileProgram(kernelProgram, 1, deviceArray, "-cl-std=CL1.2 -Werror",
-                includePrograms.length, includePrograms, includeNames, null, null);
+        String options = "-cl-std=CL1.2 -Werror";
+        String extensions = device.getString(CL_DEVICE_EXTENSIONS);
+        if (extensions.contains("cl_khr_fp64") || extensions.contains("cl_amd_fp64")) {
+            options += " -D DEVICE_FP64";
+        }
+        int code = clBuildProgram(kernelProgram, 1, deviceArray, options, null, null);
         if (code != CL_SUCCESS) {
             String error;
             switch (code) {
@@ -99,8 +74,8 @@ public class ClContext {
                 case CL_INVALID_DEVICE:
                     error = "CL_INVALID_DEVICE";
                     break;
-                case CL_INVALID_COMPILER_OPTIONS:
-                    error = "CL_INVALID_COMPILER_OPTIONS";
+                case CL_INVALID_BUILD_OPTIONS:
+                    error = "CL_INVALID_BUILD_OPTIONS";
                     break;
                 case CL_INVALID_OPERATION:
                     error = "CL_INVALID_OPERATION";
@@ -108,8 +83,8 @@ public class ClContext {
                 case CL_COMPILER_NOT_AVAILABLE:
                     error = "CL_COMPILER_NOT_AVAILABLE";
                     break;
-                case CL_COMPILE_PROGRAM_FAILURE:
-                    error = "CL_COMPILE_PROGRAM_FAILURE";
+                case CL_BUILD_PROGRAM_FAILURE:
+                    error = "CL_BUILD_PROGRAM_FAILURE";
                     break;
                 case CL_OUT_OF_RESOURCES:
                     error = "CL_OUT_OF_RESOURCES";
@@ -132,16 +107,7 @@ public class ClContext {
 
             throw new RuntimeException("Failed to build CL program with error: " + error + "\n" + new String(buffer, 0, buffer.length-1));
         }
-
-        return clLinkProgram(context, 1, deviceArray, "", 1,
-                new cl_program[] { kernelProgram }, null, null, null);
-    }
-
-    protected static void readHeaders(String kernel, HashMap<String, cl_program> headerFiles) {
-        Arrays.stream(kernel.split("\\n")).filter(line -> line.startsWith("#include")).forEach(line -> {
-            String stripped = line.substring("#include".length()).trim();
-            String header = stripped.substring(1, stripped.length() - 1);
-            headerFiles.putIfAbsent(header, null);
-        });
+        CL.setExceptionsEnabled(true);
+        return kernelProgram;
     }
 }

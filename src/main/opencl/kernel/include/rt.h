@@ -2,6 +2,7 @@
 #define CHUNKYCLPLUGIN_WAVEFRONT_H
 
 #include "../opencl.h"
+#include "compat.h"
 
 #define RAY_INDIRECT 0b001
 #define RAY_PREVIEW  0b010
@@ -35,7 +36,7 @@ IntersectionRecord IntersectionRecord_new() {
     record.flags = 0;
     record.block = 0;
     record.medium = 0;
-    record.normal = (float3) (0, 1, 0);
+    record.normal = make_float3(0, 1, 0);
     return record;
 }
 

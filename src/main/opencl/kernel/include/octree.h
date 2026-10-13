@@ -2,6 +2,7 @@
 #define CHUNKYCLPLUGIN_OCTREE_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "constants.h"
 #include "primitives.h"
@@ -22,8 +23,8 @@ Octree Octree_create(__global const int* treeData, int depth) {
     return octree;
 }
 
-int Octree_get(Octree* self, int x, int y, int z) {
-    int3 bp = (int3) (x, y, z);
+int Octree_get(__private Octree* self, int x, int y, int z) {
+    int3 bp = make_int3(x, y, z);
 
     // Check inbounds
     int3 lv = bp >> self->depth;
@@ -40,7 +41,7 @@ int Octree_get(Octree* self, int x, int y, int z) {
     return -data;
 }
 
-bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int drawDepth, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int drawDepth, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     float distMarch = 0;
 
     float3 invD = 1 / ray.direction;
@@ -126,9 +127,9 @@ float3 _Octree_exitNormal(AABB box, float3 origin, float3 invD) {
     float tx = (invD.x > 0 ? box.xmax - origin.x : box.xmin - origin.x) * invD.x;
     float ty = (invD.y > 0 ? box.ymax - origin.y : box.ymin - origin.y) * invD.y;
     float tz = (invD.z > 0 ? box.zmax - origin.z : box.zmin - origin.z) * invD.z;
-    if (tx <= ty && tx <= tz) return (float3) (sign(invD.x), 0, 0);
-    if (ty <= tz) return (float3) (0, sign(invD.y), 0);
-    return (float3) (0, 0, sign(invD.z));
+    if (tx <= ty && tx <= tz) return make_float3(sign(invD.x), 0, 0);
+    if (ty <= tz) return make_float3(0, sign(invD.y), 0);
+    return make_float3(0, 0, sign(invD.z));
 }
 
 // Is the point inside water (used to find the starting medium of camera rays)?
@@ -144,7 +145,7 @@ bool Octree_isInsideWater(Octree self, BlockPalette palette, float3 point) {
 // March a ray that is inside water through the water octree until it leaves the water, either
 // through a water surface or into a non-water block. Mirrors Octree.exitWater in Chunky.
 bool Octree_exitWater(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette,
-                      int drawDepth, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+                      int drawDepth, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     if (!AABB_inside(self.bounds, ray.origin)) {
         return false;
     }
@@ -154,7 +155,7 @@ bool Octree_exitWater(Octree self, image2d_array_t atlas, BlockPalette palette, 
     float3 offsetD = ray.direction * OFFSET;
     int depth = self.depth;
     int waterMaterial = -1;
-    float3 normal = (float3) (0, 1, 0);
+    float3 normal = make_float3(0, 1, 0);
 
     for (int i = 0; i < drawDepth; i++) {
         if (distMarch > record->distance) {
@@ -207,10 +208,10 @@ bool Octree_exitWater(Octree self, image2d_array_t atlas, BlockPalette palette, 
                 return false;
             }
             float3 hit = ray.origin + ray.direction * hitDistance;
-            float2 uv = (float2) (hit.x - floor(hit.x), hit.z - floor(hit.z));
+            float2 uv = make_float2(hit.x - floor(hit.x), hit.z - floor(hit.z));
             Material material = Material_get(materialPalette, waterMaterial);
             if (!Material_sample(material, atlas, uv, sample)) {
-                sample->color = (float4) (1, 1, 1, 1);
+                sample->color = make_float4(1, 1, 1, 1);
                 sample->emittance = 0;
                 sample->specular = 0;
                 sample->metalness = 0;

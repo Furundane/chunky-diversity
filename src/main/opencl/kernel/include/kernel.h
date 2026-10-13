@@ -2,6 +2,7 @@
 #define CHUNKYCL_KERNEL_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "octree.h"
 #include "block.h"
@@ -30,7 +31,7 @@ typedef struct {
 #define SUN_LUMINOSITY    0b1000  // Scale direct light by the luminosity pdf
 
 
-bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, IntersectionRecord* record, MaterialSample* sample, Material* mat) {
+bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private Material* mat) {
     float distance = 0;
 
     for (int i = 0; i < self.drawDepth; i++) {
@@ -71,7 +72,7 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, IntersectionRe
     return false;
 }
 
-void intersectSky(image2d_t skyTexture, float skyIntensity, Sun sun, image2d_array_t atlas, Ray ray, int sunMode, MaterialSample* sample) {
+void intersectSky(image2d_t skyTexture, float skyIntensity, Sun sun, image2d_array_t atlas, Ray ray, int sunMode, __private MaterialSample* sample) {
     Sky_intersect(skyTexture, skyIntensity, ray, sample);
     Sun_intersect(sun, atlas, ray, sunMode, sample);
 }

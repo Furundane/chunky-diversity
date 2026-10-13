@@ -1,4 +1,5 @@
 #include "../opencl.h"
+#include "compat.h"
 #include "octree.h"
 #include "rt.h"
 #include "block.h"
@@ -24,7 +25,6 @@ Ray ray_to_camera(
         float3 m3s = vload3(3, cameraSettings);
 
         int width = canvasConfig[0];
-        int height = canvasConfig[1];
         int fullWidth = canvasConfig[2];
         int fullHeight = canvasConfig[3];
         int cropX = canvasConfig[4];
@@ -41,12 +41,12 @@ Ray ray_to_camera(
                 break;
         }
 
-        ray.direction = normalize((float3) (
+        ray.direction = normalize(make_float3(
                 dot(m1s, ray.direction),
                         dot(m2s, ray.direction),
                         dot(m3s, ray.direction)
         ));
-        ray.origin = (float3) (
+        ray.origin = make_float3(
                 dot(m1s, ray.origin),
                         dot(m2s, ray.origin),
                         dot(m3s, ray.origin)
@@ -89,9 +89,9 @@ __kernel void render(
     __global const int* canvasConfig,
     __global const int* rayDepth,
     __global float* res
-
+    KERNEL_GID_PARAM
 ) {
-    int gid = get_global_id(0);
+    int gid = GLOBAL_ID;
 
     Scene scene;
     scene.materialPalette = MaterialPalette_new(matPalette);
@@ -228,8 +228,9 @@ __kernel void preview(
 
     __global const int* canvasConfig,
     __global int* res
+    KERNEL_GID_PARAM
 ) {
-    int gid = get_global_id(0);
+    int gid = GLOBAL_ID;
 
     int px = gid % canvasConfig[0] + canvasConfig[4];
     int py = gid / canvasConfig[0] + canvasConfig[5];
@@ -273,7 +274,7 @@ __kernel void preview(
 
     float3 color;
     if (closestIntersect(scene, textureAtlas, ray, &record, &sample, &material)) {
-        float shading = dot(record.normal, (float3) (0.25, 0.866, 0.433));
+        float shading = dot(record.normal, make_float3(0.25, 0.866, 0.433));
         shading = fmax(0.3f, shading);
         if (record.flags & HIT_WATER) {
             color = Water_color(scene.water, sample) * shading;

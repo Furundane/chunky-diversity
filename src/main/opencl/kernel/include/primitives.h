@@ -2,6 +2,7 @@
 #define CHUNKYCLPLUGIN_PRIMITIVES_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "constants.h"
 #include "material.h"
@@ -37,8 +38,8 @@ bool AABB_inside(AABB self, float3 point) {
 // Test for an intersection. Returns NaN if there was no intersection.
 // Returns the distance if there was an intersection.
 float AABB_quick_intersect(AABB self, float3 origin, float3 invDir) {
-    float3 minVals = (float3) (self.xmin, self.ymin, self.zmin);
-    float3 maxVals = (float3) (self.xmax, self.ymax, self.zmax);
+    float3 minVals = make_float3(self.xmin, self.ymin, self.zmin);
+    float3 maxVals = make_float3(self.xmax, self.ymax, self.zmax);
 
     float3 t1s = (minVals - origin) * invDir;
     float3 t2s = (maxVals - origin) * invDir;
@@ -59,8 +60,8 @@ float AABB_quick_intersect(AABB self, float3 origin, float3 invDir) {
 
 // Exit from an AABB
 float AABB_exit(AABB self, float3 origin, float3 invDir) {
-    float3 minVals = (float3) (self.xmin, self.ymin, self.zmin);
-    float3 maxVals = (float3) (self.xmax, self.ymax, self.zmax);
+    float3 minVals = make_float3(self.xmin, self.ymin, self.zmin);
+    float3 maxVals = make_float3(self.xmax, self.ymax, self.zmax);
 
     float3 t1s = (minVals - origin) * invDir;
     float3 t2s = (maxVals - origin) * invDir;
@@ -72,9 +73,9 @@ float AABB_exit(AABB self, float3 origin, float3 invDir) {
 // Test for an intersection and calculate the normal and UV.
 // Returns NaN if there was no intersection. Returns the distance if
 // there was an intersection.
-bool AABB_full_intersect(AABB self, Ray ray, IntersectionRecord* record) {
-    float3 minVals = (float3) (self.xmin, self.ymin, self.zmin);
-    float3 maxVals = (float3) (self.xmax, self.ymax, self.zmax);
+bool AABB_full_intersect(AABB self, Ray ray, __private IntersectionRecord* record) {
+    float3 minVals = make_float3(self.xmin, self.ymin, self.zmin);
+    float3 maxVals = make_float3(self.xmax, self.ymax, self.zmax);
 
     float3 t1s = (minVals - ray.origin) / ray.direction;
     float3 t2s = (maxVals - ray.origin) / ray.direction;
@@ -99,28 +100,28 @@ bool AABB_full_intersect(AABB self, Ray ray, IntersectionRecord* record) {
     float3 o = ray.origin + tmin * ray.direction;
     float3 d = 1 / (maxVals - minVals);
     if (t1s.x == tmin) {
-        record->texCoord = (float2) (1 - (o.z - self.zmin) * d.z, (o.y - self.ymin) * d.y);
-        record->normal = (float3) (-1, 0, 0);
+        record->texCoord = make_float2(1 - (o.z - self.zmin) * d.z, (o.y - self.ymin) * d.y);
+        record->normal = make_float3(-1, 0, 0);
     }
     if (t2s.x == tmin) {
-        record->texCoord = (float2) ((o.z - self.zmin) * d.z, (o.y - self.ymin) * d.y);
-        record->normal = (float3) (1, 0, 0);
+        record->texCoord = make_float2((o.z - self.zmin) * d.z, (o.y - self.ymin) * d.y);
+        record->normal = make_float3(1, 0, 0);
     }
     if (t1s.y == tmin) {
-        record->texCoord = (float2) ((o.x - self.xmin) * d.x, 1 - (o.z - self.zmin) * d.z);
-        record->normal = (float3) (0, -1, 0);
+        record->texCoord = make_float2((o.x - self.xmin) * d.x, 1 - (o.z - self.zmin) * d.z);
+        record->normal = make_float3(0, -1, 0);
     }
     if (t2s.y == tmin) {
-        record->texCoord = (float2) ((o.x - self.xmin) * d.x, (o.z - self.zmin) * d.z);
-        record->normal = (float3) (0, 1, 0);
+        record->texCoord = make_float2((o.x - self.xmin) * d.x, (o.z - self.zmin) * d.z);
+        record->normal = make_float3(0, 1, 0);
     }
     if (t1s.z == tmin) {
-        record->texCoord = (float2) ((o.x - self.xmin) * d.x, (o.y - self.ymin) * d.y);
-        record->normal = (float3) (0, 0, -1);
+        record->texCoord = make_float2((o.x - self.xmin) * d.x, (o.y - self.ymin) * d.y);
+        record->normal = make_float3(0, 0, -1);
     }
     if (t2s.z == tmin) {
-        record->texCoord = (float2) (1 - (o.x - self.xmin) * d.x, (o.y - self.ymin) * d.y);
-        record->normal = (float3) (0, 0, 1);
+        record->texCoord = make_float2(1 - (o.x - self.xmin) * d.x, (o.y - self.ymin) * d.y);
+        record->normal = make_float3(0, 0, 1);
     }
 
     return true;
@@ -129,9 +130,9 @@ bool AABB_full_intersect(AABB self, Ray ray, IntersectionRecord* record) {
 // Test for an intersection and calculate the normal and UV.
 // Returns NaN if there was no intersection. Returns the distance if
 // there was an intersection. Uses full block uv mapping.
-bool AABB_full_intersect_map_2(AABB self, Ray ray, IntersectionRecord* record) {
-    float3 minVals = (float3) (self.xmin, self.ymin, self.zmin);
-    float3 maxVals = (float3) (self.xmax, self.ymax, self.zmax);
+bool AABB_full_intersect_map_2(AABB self, Ray ray, __private IntersectionRecord* record) {
+    float3 minVals = make_float3(self.xmin, self.ymin, self.zmin);
+    float3 maxVals = make_float3(self.xmax, self.ymax, self.zmax);
 
     float3 t1s = (minVals - ray.origin) / ray.direction;
     float3 t2s = (maxVals - ray.origin) / ray.direction;
@@ -155,28 +156,28 @@ bool AABB_full_intersect_map_2(AABB self, Ray ray, IntersectionRecord* record) {
 
     float3 o = ray.origin + tmin * ray.direction;
     if (t1s.x == tmin) {
-        record->texCoord = (float2) (o.z, o.y);
-        record->normal = (float3) (-1, 0, 0);
+        record->texCoord = make_float2(o.z, o.y);
+        record->normal = make_float3(-1, 0, 0);
     }
     if (t2s.x == tmin) {
-        record->texCoord = (float2) (1 - o.z, o.y);
-        record->normal = (float3) (1, 0, 0);
+        record->texCoord = make_float2(1 - o.z, o.y);
+        record->normal = make_float3(1, 0, 0);
     }
     if (t1s.y == tmin) {
-        record->texCoord = (float2) (o.x, o.z);
-        record->normal = (float3) (0, -1, 0);
+        record->texCoord = make_float2(o.x, o.z);
+        record->normal = make_float3(0, -1, 0);
     }
     if (t2s.y == tmin) {
-        record->texCoord = (float2) (o.x, 1 - o.z);
-        record->normal = (float3) (0, 1, 0);
+        record->texCoord = make_float2(o.x, 1 - o.z);
+        record->normal = make_float3(0, 1, 0);
     }
     if (t1s.z == tmin) {
-        record->texCoord = (float2) (1 - o.x, o.y);
-        record->normal = (float3) (0, 0, -1);
+        record->texCoord = make_float2(1 - o.x, o.y);
+        record->normal = make_float3(0, 0, -1);
     }
     if (t2s.z == tmin) {
-        record->texCoord = (float2) (o.x, o.y);
-        record->normal = (float3) (0, 0, 1);
+        record->texCoord = make_float2(o.x, o.y);
+        record->normal = make_float3(0, 0, 1);
     }
 
     return true;
@@ -218,7 +219,7 @@ TexturedAABB TexturedAABB_new(__global const int* aabbModels, int index) {
     return b;
 }
 
-bool TexturedAABB_intersect(TexturedAABB self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool TexturedAABB_intersect(TexturedAABB self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     IntersectionRecord tempRecord = *record;
 
     bool hit = AABB_full_intersect_map_2(self.box, ray, &tempRecord);
@@ -317,7 +318,7 @@ Quad Quad_new(__global const int* quadModels, int index) {
     return q;
 }
 
-bool Quad_intersect(Quad self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool Quad_intersect(Quad self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     float3 n = normalize(cross(self.xv, self.yv));
     bool doubleSided = self.flags & 1;
     
@@ -330,7 +331,7 @@ bool Quad_intersect(Quad self, image2d_array_t atlas, MaterialPalette materialPa
             float v = dot(pt, self.yv) / dot(self.yv, self.yv);
 
             if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
-                float2 texCoord = (float2) (self.uv.x + (u * self.uv.y), self.uv.z + (v * self.uv.w));
+                float2 texCoord = make_float2(self.uv.x + (u * self.uv.y), self.uv.z + (v * self.uv.w));
                 Material material = Material_get(materialPalette, self.material);
                 if (Material_sample(material, atlas, texCoord, sample)) {
                     record->texCoord = texCoord;
@@ -393,7 +394,7 @@ Triangle Triangle_new(__global const int* trigModels, int index) {
     return t;
 }
 
-bool Triangle_intersect(Triangle self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool Triangle_intersect(Triangle self, image2d_array_t atlas, MaterialPalette materialPalette, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     float3 pvec, qvec, tvec;
 
     pvec = cross(ray.direction, self.e2);
@@ -424,7 +425,7 @@ bool Triangle_intersect(Triangle self, image2d_array_t atlas, MaterialPalette ma
 
     if (t > EPS && t < record->distance) {
         float w = 1 - u - v;
-        float2 texCoord = (float2) (
+        float2 texCoord = make_float2(
             self.t1.x * u + self.t2.x * v + self.t3.x * w,
             self.t1.y * u + self.t2.y * v + self.t3.y * w
         );

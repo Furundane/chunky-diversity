@@ -2,6 +2,7 @@
 #define CHUNKYCLPLUGIN_CAMERA_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "random.h"
 
@@ -18,8 +19,8 @@ Ray Camera_pinHole(float x, float y, Random random, __global const float* projec
     float subjectDistance = projectorSettings[1];
     float fovTan = projectorSettings[2];
 
-    ray.origin = (float3) (0, 0, 0);
-    ray.direction = (float3) (fovTan * x, fovTan * y, 1.0);
+    ray.origin = make_float3(0, 0, 0);
+    ray.direction = make_float3(fovTan * x, fovTan * y, 1.0);
 
     if (aperature > 0) {
         ray.direction *= subjectDistance / ray.direction.z;
@@ -29,8 +30,8 @@ Ray Camera_pinHole(float x, float y, Random random, __global const float* projec
         float rx = cos(theta) * r;
         float ry = sin(theta) * r;
 
-        ray.direction -= (float3) (rx, ry, 0);
-        ray.origin += (float3) (rx, ry, 0);
+        ray.direction -= make_float3(rx, ry, 0);
+        ray.origin += make_float3(rx, ry, 0);
     }
 
     return ray;

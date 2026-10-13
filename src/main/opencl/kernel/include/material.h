@@ -4,6 +4,7 @@
 #define CHUNKYCLPLUGIN_MATERIAL_H
 
 #include "../opencl.h"
+#include "compat.h"
 #include "rt.h"
 #include "textureAtlas.h"
 #include "utils.h"
@@ -53,7 +54,7 @@ typedef struct {
     float roughness;
 } MaterialSample;
 
-bool Material_sample(Material self, image2d_array_t atlas, float2 uv, MaterialSample* sample) {
+bool Material_sample(Material self, image2d_array_t atlas, float2 uv, __private MaterialSample* sample) {
     // Color
     float4 color;
     if (self.flags & 0b100)
@@ -149,7 +150,7 @@ float3 _Material_diffuseReflection(IntersectionRecord record, Random random) {
     vy = uz * record.normal.x - ux * record.normal.z;
     vz = ux * record.normal.y - uy * record.normal.x;
 
-    return (float3) (
+    return make_float3(
         ux * tx + vx * ty + record.normal.x * tz,
         uy * tx + vy * ty + record.normal.y * tz,
         uz * tx + vz * ty + record.normal.z * tz

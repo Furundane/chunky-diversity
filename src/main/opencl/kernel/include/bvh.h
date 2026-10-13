@@ -2,16 +2,17 @@
 #define CHUNKYCL_PLUGIN_BVH
 
 #include "../opencl.h"
+#include "compat.h"
 #include "material.h"
 #include "primitives.h"
 
 typedef struct {
     __global const int* bvh;
     __global const int* trigs;
-    MaterialPalette* materialPalette;
+    __private MaterialPalette* materialPalette;
 } Bvh;
 
-Bvh Bvh_new(__global const int* bvh, __global const int* trigs, MaterialPalette* materialPalette) {
+Bvh Bvh_new(__global const int* bvh, __global const int* trigs, __private MaterialPalette* materialPalette) {
     Bvh b;
     b.bvh = bvh;
     b.trigs = trigs;
@@ -19,7 +20,7 @@ Bvh Bvh_new(__global const int* bvh, __global const int* trigs, MaterialPalette*
     return b;
 }
 
-bool Bvh_intersect(Bvh self, image2d_array_t atlas, MaterialPalette palette, Ray ray, IntersectionRecord* record, MaterialSample* sample) {
+bool Bvh_intersect(Bvh self, image2d_array_t atlas, MaterialPalette palette, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     bool hit = false;
     
     int toVisit = 0;
