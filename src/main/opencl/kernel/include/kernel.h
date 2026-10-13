@@ -73,7 +73,7 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
     return false;
 }
 
-void intersectSky(image2d_t skyTexture, float skyMultiplier, Sun sun, image2d_array_t atlas, Ray ray, int sunMode, __private MaterialSample* sample) {
+void intersectSky(__global const float* skyTexture, float skyMultiplier, Sun sun, image2d_array_t atlas, Ray ray, int sunMode, __private MaterialSample* sample) {
     Sky_intersect(skyTexture, skyMultiplier, ray, sample);
     Sun_intersect(sun, atlas, ray, sunMode, sample);
 }

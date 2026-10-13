@@ -21,8 +21,7 @@ using namespace metal;
 #define __private thread
 #define __kernel kernel
 
-// Images. Texture reads are written per backend where they occur (textureAtlas.h, sky.h).
-#define image2d_t texture2d<float>
+// Images. The texture read is written per backend where it occurs (textureAtlas.h).
 #define image2d_array_t texture2d_array<float>
 
 // Reinterpreting casts

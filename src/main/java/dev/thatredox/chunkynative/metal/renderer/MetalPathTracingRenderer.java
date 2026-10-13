@@ -117,6 +117,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     sceneLoader.getTrigPalette().handle,
 
                     sceneLoader.getMaterialPalette().handle,
+                    sceneLoader.getSkyTexture().handle,
 
                     sceneLoader.getSkyLight().handle,
                     sceneLoader.getSun().handle,
@@ -130,7 +131,6 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             };
             long[] textures = {
                     sceneLoader.getTexturePalette().getAtlas().handle,
-                    sceneLoader.getSkyTexture().handle,
             };
             Metal.dispatch(metal.context, metal.renderPipeline, buffers, textures, pixels);
         }

@@ -13,7 +13,6 @@ import dev.thatredox.chunkynative.common.export.texture.AbstractTextureLoader;
 import dev.thatredox.chunkynative.common.scene.SkyData;
 import dev.thatredox.chunkynative.common.state.SkyState;
 import dev.thatredox.chunkynative.metal.util.MetalBuffer;
-import dev.thatredox.chunkynative.metal.util.MetalTexture;
 import dev.thatredox.chunkynative.util.FunctionCache;
 import se.llbit.chunky.renderer.ResetReason;
 import se.llbit.chunky.renderer.scene.Scene;
@@ -26,7 +25,7 @@ public class MetalSceneLoader extends AbstractSceneLoader {
     protected final FunctionCache<int[], MetalBuffer> worldBvhBuffer;
     protected final FunctionCache<int[], MetalBuffer> actorBvhBuffer;
     protected final FunctionCache<PackedSun, MetalBuffer> sunBuffer;
-    protected MetalTexture skyTexture = null;
+    protected MetalBuffer skyTexture = null;
     protected MetalBuffer skyLight = null;
     protected SkyState skyState = null;
 
@@ -56,7 +55,7 @@ public class MetalSceneLoader extends AbstractSceneLoader {
                 if (skyTexture != null) skyTexture.close();
                 if (skyLight != null) skyLight.close();
                 SkyData sky = new SkyData(scene);
-                skyTexture = MetalTexture.create2D(context, sky.resolution, sky.resolution, sky.texture);
+                skyTexture = MetalBuffer.ofFloats(context, sky.texture);
                 skyLight = MetalBuffer.ofFloats(context, sky.skyLight);
                 skyState = newSky;
                 packedSun = new PackedSun(scene.sun(), getTexturePalette());
@@ -173,7 +172,7 @@ public class MetalSceneLoader extends AbstractSceneLoader {
         return actorBvhBuffer.apply(this.actorBvh);
     }
 
-    public MetalTexture getSkyTexture() {
+    public MetalBuffer getSkyTexture() {
         return skyTexture;
     }
 

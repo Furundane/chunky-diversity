@@ -10,8 +10,9 @@ import se.llbit.math.Ray;
 import java.lang.reflect.Field;
 
 /**
- * The sky baked into a square RGBA8 texture (equirectangular: x is the azimuth, y the elevation),
- * for the kernel's {@code skyTexture} argument, sampled with linear filtering.
+ * The sky baked into a square float image (equirectangular: x is the azimuth, y the elevation) for the
+ * kernel's {@code skyTexture} argument: the resolution, then linear RGB per texel, row by row. Floats
+ * keep skies brighter than 1 (HDR). The kernel interpolates bilinearly (Sky_intersect in sky.h).
  *
  * <p>The texture holds the sky color times the sky exposure. The kernel multiplies it by
  * {@link #skyLight}, like Chunky's {@code Sky.getSkyColor} (reflected rays) and
@@ -19,7 +20,7 @@ import java.lang.reflect.Field;
  */
 public class SkyData {
     public final int resolution;
-    public final byte[] texture;
+    public final float[] texture;
     /** The kernel's {@code skyLight}: the sky light modifier and the apparent sky light modifier. */
     public final float[] skyLight;
 
@@ -30,11 +31,12 @@ public class SkyData {
         double apparentSkyLight = sky.getApparentSkyLight();
         this.skyLight = new float[] {(float) skyLightModifier, (float) apparentSkyLight};
 
-        texture = new byte[resolution * resolution * 4];
+        texture = new float[1 + resolution * resolution * 3];
+        texture[0] = resolution;
         Ray ray = new Ray();
         for (int i = 0; i < resolution; i++) {
             for (int j = 0; j < resolution; j++) {
-                int offset = 4 * (j * resolution + i);
+                int offset = 1 + 3 * (j * resolution + i);
 
                 double theta = ((double) i / resolution) * 2 * FastMath.PI;
                 double phi = ((double) j / resolution) * FastMath.PI - FastMath.PI / 2;
@@ -53,17 +55,11 @@ public class SkyData {
                     ray.color.set(0, 0, 0, 1);
                     scale = 0;
                 }
-                texture[offset + 0] = toByte(ray.color.x * scale);
-                texture[offset + 1] = toByte(ray.color.y * scale);
-                texture[offset + 2] = toByte(ray.color.z * scale);
-                texture[offset + 3] = (byte) 255;
+                texture[offset + 0] = (float) (ray.color.x * scale);
+                texture[offset + 1] = (float) (ray.color.y * scale);
+                texture[offset + 2] = (float) (ray.color.z * scale);
             }
         }
-    }
-
-    /** Clamped to [0, 1]: casting a larger value to byte used to wrap around to a dark color. */
-    private static byte toByte(double value) {
-        return (byte) Math.max(0, Math.min(255, (int) (value * 255)));
     }
 
     private static int getTextureResolution(Scene scene) {

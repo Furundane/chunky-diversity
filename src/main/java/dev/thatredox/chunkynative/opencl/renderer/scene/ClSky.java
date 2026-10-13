@@ -23,17 +23,8 @@ public class ClSky implements AutoCloseable {
                 CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, (long) Sizeof.cl_float * sky.skyLight.length,
                 Pointer.to(sky.skyLight), null));
 
-        cl_image_format fmt = new cl_image_format();
-        fmt.image_channel_data_type = CL_UNORM_INT8;
-        fmt.image_channel_order = CL_RGBA;
-
-        cl_image_desc desc = new cl_image_desc();
-        desc.image_type = CL_MEM_OBJECT_IMAGE2D;
-        desc.image_width = sky.resolution;
-        desc.image_height = sky.resolution;
-
-        this.skyTexture = new ClMemory(clCreateImage(context.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                fmt, desc, Pointer.to(sky.texture), null));
+        this.skyTexture = new ClMemory(clCreateBuffer(context.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                (long) Sizeof.cl_float * sky.texture.length, Pointer.to(sky.texture), null));
     }
 
     @Override

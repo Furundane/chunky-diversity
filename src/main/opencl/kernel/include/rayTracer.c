@@ -79,7 +79,7 @@ __kernel void render(
     image2d_array_t textureAtlas,
     __global const int* matPalette,
 
-    image2d_t skyTexture,
+    __global const float* skyTexture,  // See SkyData
     __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,
@@ -230,7 +230,7 @@ __kernel void preview(
     image2d_array_t textureAtlas,
     __global const int* matPalette,
 
-    image2d_t skyTexture,
+    __global const float* skyTexture,  // See SkyData
     __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,

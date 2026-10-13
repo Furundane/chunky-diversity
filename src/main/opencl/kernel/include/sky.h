@@ -98,23 +98,39 @@ float3 Sun_sampleDirection(Sun self, Random random) {
     return normalize(self.su * (cos(phi) * sin_a) + self.sv * (sin(phi) * sin_a) + self.sw * cos_a);
 }
 
-#ifdef __METAL_VERSION__
-constexpr sampler skySampler(coord::normalized, address::mirrored_repeat, filter::linear);
-#define Sky_read(texture, uv) (texture).sample(skySampler, (uv))
-#else
-const sampler_t skySampler = CLK_NORMALIZED_COORDS_TRUE  | CLK_ADDRESS_MIRRORED_REPEAT | CLK_FILTER_LINEAR;
-#define Sky_read(texture, uv) read_imagef((texture), skySampler, (uv))
-#endif
+// The baked sky (SkyData): the resolution, then linear RGB floats per texel, row y = elevation.
+float3 _Sky_texel(__global const float* sky, int resolution, int x, int y) {
+    return vload3(y * resolution + x, sky + 1);
+}
 
-void Sky_intersect(image2d_t skyTexture, float skyMultiplier, Ray ray, __private MaterialSample* sample) {
+void Sky_intersect(__global const float* sky, float skyMultiplier, Ray ray, __private MaterialSample* sample) {
     float3 direction = ray.direction;
 
     float theta = atan2(direction.z, direction.x);
     theta /= M_PI_F * 2;
     theta = fmod(fmod(theta, 1) + 1, 1);
     float phi = (asin(clamp(direction.y, -1.0f, 1.0f)) + M_PI_2_F) * M_1_PI_F;
+    // Straight up or down, atan2(0, 0) is NaN on some GPUs (Metal); an index computed from it would read
+    // outside the buffer. The azimuth does not matter there.
+    if (!(theta >= 0 && theta < 1)) theta = 0;
 
-    sample->color = Sky_read(skyTexture, make_float2(theta, phi)) * skyMultiplier;
+    // Bilinear interpolation. Texel (x, y) holds the sky at azimuth x / resolution and elevation
+    // y / resolution; the azimuth wraps around and the elevation is clamped at the poles.
+    int resolution = (int) sky[0];
+    float fx = theta * resolution;
+    float fy = phi * resolution;
+    int x0 = (int) floor(fx);
+    int y0 = (int) floor(fy);
+    float tx = fx - x0;
+    float ty = fy - y0;
+    int x1 = (x0 + 1) % resolution;
+    x0 = x0 % resolution;
+    int ya = clamp(y0, 0, resolution - 1);
+    int yb = clamp(y0 + 1, 0, resolution - 1);
+    float3 bottom = mix(_Sky_texel(sky, resolution, x0, ya), _Sky_texel(sky, resolution, x1, ya), tx);
+    float3 top = mix(_Sky_texel(sky, resolution, x0, yb), _Sky_texel(sky, resolution, x1, yb), tx);
+
+    sample->color = make_float4(mix(bottom, top, ty) * skyMultiplier, 1);
     sample->emittance = 1.0;
 }
 
