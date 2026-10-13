@@ -58,6 +58,10 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         private final MetalBuffer atmosphere;
         private final int pixels;
         private final long pipeline;
+        // -Dchunkycl.profilePasses=true prints the GPU time per pass when the job ends.
+        private static final boolean PROFILE = Boolean.getBoolean("chunkycl.profilePasses");
+        private long gpuNanos = 0;
+        private int passes = 0;
 
         MetalRenderJob(Scene scene, float[] passBuffer) {
             this.scene = scene;
@@ -138,7 +142,8 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             long[] textures = {
                     sceneLoader.getTexturePalette().getAtlas().handle,
             };
-            Metal.dispatch(metal.context, pipeline, buffers, textures, pixels);
+            gpuNanos += Metal.dispatch(metal.context, pipeline, buffers, textures, pixels);
+            passes++;
         }
 
         @Override
@@ -157,6 +162,9 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             rayDepth.close();
             water.close();
             atmosphere.close();
+            if (PROFILE && passes > 0) {
+                System.out.printf(java.util.Locale.ROOT, "METAL_PROFILE passes=%d gpuMsPerPass=%.2f%n", passes, gpuNanos / 1e6 / passes);
+            }
         }
     }
 

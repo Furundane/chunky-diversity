@@ -84,9 +84,15 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             camera.generate(renderLock, true);
         }
 
+        // -Dchunkycl.profilePasses=true prints the time per pass (enqueue to finish) when the job ends.
+        private static final boolean PROFILE = Boolean.getBoolean("chunkycl.profilePasses");
+        private long passNanos = 0;
+        private int passes = 0;
+
         @Override
         public void renderPass(int seed, int spp) {
             cl_event[] renderEvent = { new cl_event() };
+            long start = System.nanoTime();
 
             clEnqueueWriteBuffer(context.context.queue, randomSeed.get(), CL_TRUE, 0, Sizeof.cl_int,
                     Pointer.to(new int[]{seed}), 0, null, null);
@@ -129,6 +135,8 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
                     renderEvent[0]);
             clWaitForEvents(1, renderEvent);
             clReleaseEvent(renderEvent[0]);
+            passNanos += System.nanoTime() - start;
+            passes++;
         }
 
         @Override
@@ -149,6 +157,9 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             water.close();
             atmosphere.close();
             clReleaseKernel(kernel);
+            if (PROFILE && passes > 0) {
+                System.out.printf(java.util.Locale.ROOT, "CL_PROFILE passes=%d msPerPass=%.2f%n", passes, passNanos / 1e6 / passes);
+            }
         }
     }
 
