@@ -91,5 +91,19 @@ public final class Metal {
      */
     public static native long dispatch(long context, long pipeline, long[] buffers, long[] textures, int threads);
 
+    /** Like {@link #compile}, for several kernel functions of the same source. */
+    public static native long[] compileFunctions(long context, String source, String[] functions, boolean fastMath);
+
+    /*
+     * Batches: dispatches recorded with addDispatch run one after the other (each sees the results
+     * of the previous ones) in a single command buffer when runBatch is called. runBatch waits for
+     * them, returns the GPU time in nanoseconds and frees the batch.
+     */
+    public static native long beginBatch(long context);
+
+    public static native void addDispatch(long batch, long pipeline, long[] buffers, long[] textures, int threads);
+
+    public static native long runBatch(long batch);
+
     public static native void release(long handle);
 }

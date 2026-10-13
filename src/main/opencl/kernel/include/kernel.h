@@ -38,6 +38,19 @@ typedef struct {
 #define SUN_LUMINOSITY    0b1000  // Scale direct light by the luminosity pdf
 
 
+// CloudMaterial: opaque white.
+Material Material_cloud() {
+    Material cloud;
+    cloud.flags = 0;
+    cloud.tint = 0;
+    cloud.textureSize = 0;
+    cloud.color = 0xFFFFFFFF;
+    cloud.normal_emittance = 0;
+    cloud.specular_metalness_roughness = 0;
+    cloud.ior = DEFAULT_IOR;
+    return cloud;
+}
+
 bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private Material* mat) {
     float distance = 0;
 
@@ -95,15 +108,7 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
         *record = tempRecord;
         record->distance = distance;
         if (record->flags & HIT_CLOUD) {
-            Material cloud;
-            cloud.flags = 0;
-            cloud.tint = 0;
-            cloud.textureSize = 0;
-            cloud.color = 0xFFFFFFFF;
-            cloud.normal_emittance = 0;
-            cloud.specular_metalness_roughness = 0;
-            cloud.ior = DEFAULT_IOR;
-            *mat = cloud;
+            *mat = Material_cloud();
         } else {
             *mat = Material_get(self.materialPalette, record->material);
         }

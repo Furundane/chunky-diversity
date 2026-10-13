@@ -15,6 +15,7 @@ public class MetalContext {
     public final long context;
     public final MetalSceneLoader sceneLoader;
     private final Map<String, Long> renderPipelines = new HashMap<>();
+    private final Map<String, long[]> wavefrontPipelines = new HashMap<>();
 
     private static volatile MetalContext instance;
 
@@ -27,6 +28,30 @@ public class MetalContext {
     /** The render kernel compiled with the given defines (see AtmosphereData.kernelDefines), cached. */
     public long renderPipeline(String... defines) {
         return pipeline("render", defines);
+    }
+
+    /** Kernel functions of the wavefront render loop (kernel/include/wavefront.c), in this order. */
+    public static final String[] WAVEFRONT_FUNCTIONS = {"wf_generate", "wf_intersect", "wf_shade", "wf_shadow", "wf_finish"};
+
+    /**
+     * Whether the Metal renderer runs the wavefront render loop (several small kernels per bounce)
+     * instead of the single render kernel: -Dchunkymetal.wavefront=true.
+     */
+    public static boolean wavefront() {
+        return Boolean.getBoolean("chunkymetal.wavefront");
+    }
+
+    /** The wavefront kernels ({@link #WAVEFRONT_FUNCTIONS}) compiled with the given defines, cached. */
+    public synchronized long[] wavefrontPipelines(String... defines) {
+        String key = String.join(",", defines);
+        return wavefrontPipelines.computeIfAbsent(key, k -> {
+            long t0 = System.currentTimeMillis();
+            long[] pipelines = Metal.compileFunctions(context,
+                    KernelLoader.loadSource("kernel", "wavefront.c", defines), WAVEFRONT_FUNCTIONS, false);
+            Log.infof("ChunkyCL Metal: %s, wavefront kernels [%s] compiled in %d ms",
+                    Metal.deviceName(context), k, System.currentTimeMillis() - t0);
+            return pipelines;
+        });
     }
 
     /** The preview kernel compiled with the given defines, cached. */

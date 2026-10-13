@@ -56,42 +56,71 @@ JNIEXPORT jstring JNICALL Java_dev_thatredox_chunkynative_metal_Metal_deviceName
     }
 }
 
+static id<MTLLibrary> compileLibrary(JNIEnv *env, CMContext *context, jstring source, jboolean fastMath) {
+    MTLCompileOptions *options = [MTLCompileOptions new];
+    if (@available(macOS 15.0, *)) {
+        options.mathMode = fastMath ? MTLMathModeFast : MTLMathModeSafe;
+    } else {
+        options.fastMathEnabled = fastMath;
+    }
+
+    NSError *error = nil;
+    id<MTLLibrary> library = [context.device newLibraryWithSource:toNSString(env, source) options:options error:&error];
+    if (library == nil) {
+        throwRuntime(env, [@"Metal compile failed:\n" stringByAppendingString:error.localizedDescription]);
+        return nil;
+    }
+    if (error != nil) {
+        // A library with an error object means the compile succeeded with warnings.
+        fprintf(stderr, "Metal compile warnings:\n%s\n", error.localizedDescription.UTF8String);
+    }
+    return library;
+}
+
+static jlong newPipeline(JNIEnv *env, CMContext *context, id<MTLLibrary> library, NSString *functionName) {
+    id<MTLFunction> kernel = [library newFunctionWithName:functionName];
+    if (kernel == nil) {
+        throwRuntime(env, [NSString stringWithFormat:@"No kernel function named %@", functionName]);
+        return 0;
+    }
+    NSError *error = nil;
+    id<MTLComputePipelineState> pipeline = [context.device newComputePipelineStateWithFunction:kernel error:&error];
+    if (pipeline == nil) {
+        throwRuntime(env, [@"Pipeline creation failed: " stringByAppendingString:error.localizedDescription]);
+        return 0;
+    }
+    return toHandle(pipeline);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_compile(JNIEnv *env, jclass cls, jlong contextHandle,
         jstring source, jstring function, jboolean fastMath) {
     @autoreleasepool {
         CMContext *context = fromHandle(contextHandle);
-        NSString *sourceString = toNSString(env, source);
-        NSString *functionName = toNSString(env, function);
+        id<MTLLibrary> library = compileLibrary(env, context, source, fastMath);
+        if (library == nil) return 0;
+        return newPipeline(env, context, library, toNSString(env, function));
+    }
+}
 
-        MTLCompileOptions *options = [MTLCompileOptions new];
-        if (@available(macOS 15.0, *)) {
-            options.mathMode = fastMath ? MTLMathModeFast : MTLMathModeSafe;
-        } else {
-            options.fastMathEnabled = fastMath;
+JNIEXPORT jlongArray JNICALL Java_dev_thatredox_chunkynative_metal_Metal_compileFunctions(JNIEnv *env, jclass cls, jlong contextHandle,
+        jstring source, jobjectArray functions, jboolean fastMath) {
+    @autoreleasepool {
+        CMContext *context = fromHandle(contextHandle);
+        id<MTLLibrary> library = compileLibrary(env, context, source, fastMath);
+        if (library == nil) return NULL;
+        jsize count = (*env)->GetArrayLength(env, functions);
+        jlong pipelines[count];
+        for (jsize i = 0; i < count; i++) {
+            jstring name = (*env)->GetObjectArrayElement(env, functions, i);
+            pipelines[i] = newPipeline(env, context, library, toNSString(env, name));
+            if (pipelines[i] == 0) {
+                for (jsize k = 0; k < i; k++) CFBridgingRelease((void *) (intptr_t) pipelines[k]);
+                return NULL;
+            }
         }
-
-        NSError *error = nil;
-        id<MTLLibrary> library = [context.device newLibraryWithSource:sourceString options:options error:&error];
-        if (library == nil) {
-            throwRuntime(env, [@"Metal compile failed:\n" stringByAppendingString:error.localizedDescription]);
-            return 0;
-        }
-        if (error != nil) {
-            // A library with an error object means the compile succeeded with warnings.
-            fprintf(stderr, "Metal compile warnings:\n%s\n", error.localizedDescription.UTF8String);
-        }
-
-        id<MTLFunction> kernel = [library newFunctionWithName:functionName];
-        if (kernel == nil) {
-            throwRuntime(env, [NSString stringWithFormat:@"No kernel function named %@", functionName]);
-            return 0;
-        }
-        id<MTLComputePipelineState> pipeline = [context.device newComputePipelineStateWithFunction:kernel error:&error];
-        if (pipeline == nil) {
-            throwRuntime(env, [@"Pipeline creation failed: " stringByAppendingString:error.localizedDescription]);
-            return 0;
-        }
-        return toHandle(pipeline);
+        jlongArray result = (*env)->NewLongArray(env, count);
+        (*env)->SetLongArrayRegion(env, result, 0, count, pipelines);
+        return result;
     }
 }
 
@@ -202,46 +231,92 @@ JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_replaceRegion
     (*env)->ReleasePrimitiveArrayCritical(env, rgba, pixels, JNI_ABORT);
 }
 
+// Binds buffers and textures at indices 0..n-1, in the order the kernel declares them, and encodes the dispatch.
+static void encodeDispatch(JNIEnv *env, id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline,
+                           jlongArray bufferHandles, jlongArray textureHandles, jint threads) {
+    [encoder setComputePipelineState:pipeline];
+
+    jsize count = (*env)->GetArrayLength(env, bufferHandles);
+    jlong *handles = (*env)->GetLongArrayElements(env, bufferHandles, NULL);
+    for (jsize i = 0; i < count; i++) {
+        [encoder setBuffer:fromHandle(handles[i]) offset:0 atIndex:(NSUInteger) i];
+    }
+    (*env)->ReleaseLongArrayElements(env, bufferHandles, handles, JNI_ABORT);
+
+    count = (*env)->GetArrayLength(env, textureHandles);
+    handles = (*env)->GetLongArrayElements(env, textureHandles, NULL);
+    for (jsize i = 0; i < count; i++) {
+        [encoder setTexture:fromHandle(handles[i]) atIndex:(NSUInteger) i];
+    }
+    (*env)->ReleaseLongArrayElements(env, textureHandles, handles, JNI_ABORT);
+
+    // Apple GPUs support non-uniform threadgroups, so the grid need not be a multiple of the group size.
+    NSUInteger groupSize = MIN(pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger) threads);
+    [encoder dispatchThreads:MTLSizeMake((NSUInteger) threads, 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(groupSize, 1, 1)];
+}
+
+// Waits for a command buffer; returns its GPU time in ns, or 0 with an exception if it failed.
+static jlong finish(JNIEnv *env, id<MTLCommandBuffer> commandBuffer) {
+    [commandBuffer commit];
+    [commandBuffer waitUntilCompleted];
+    if (commandBuffer.status == MTLCommandBufferStatusError) {
+        throwRuntime(env, [@"Kernel failed: " stringByAppendingString:commandBuffer.error.localizedDescription]);
+        return 0;
+    }
+    return (jlong) ((commandBuffer.GPUEndTime - commandBuffer.GPUStartTime) * 1e9);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_dispatch(JNIEnv *env, jclass cls, jlong contextHandle,
         jlong pipelineHandle, jlongArray bufferHandles, jlongArray textureHandles, jint threads) {
     @autoreleasepool {
         CMContext *context = fromHandle(contextHandle);
-        id<MTLComputePipelineState> pipeline = fromHandle(pipelineHandle);
         if (threads <= 0) {
             return 0;
         }
-
         id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        [encoder setComputePipelineState:pipeline];
-
-        jsize count = (*env)->GetArrayLength(env, bufferHandles);
-        jlong *handles = (*env)->GetLongArrayElements(env, bufferHandles, NULL);
-        for (jsize i = 0; i < count; i++) {
-            [encoder setBuffer:fromHandle(handles[i]) offset:0 atIndex:(NSUInteger) i];
-        }
-        (*env)->ReleaseLongArrayElements(env, bufferHandles, handles, JNI_ABORT);
-
-        count = (*env)->GetArrayLength(env, textureHandles);
-        handles = (*env)->GetLongArrayElements(env, textureHandles, NULL);
-        for (jsize i = 0; i < count; i++) {
-            [encoder setTexture:fromHandle(handles[i]) atIndex:(NSUInteger) i];
-        }
-        (*env)->ReleaseLongArrayElements(env, textureHandles, handles, JNI_ABORT);
-
-        // Apple GPUs support non-uniform threadgroups, so the grid need not be a multiple of the group size.
-        NSUInteger groupSize = MIN(pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger) threads);
-        [encoder dispatchThreads:MTLSizeMake((NSUInteger) threads, 1, 1)
-           threadsPerThreadgroup:MTLSizeMake(groupSize, 1, 1)];
+        encodeDispatch(env, encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads);
         [encoder endEncoding];
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
+        return finish(env, commandBuffer);
+    }
+}
 
-        if (commandBuffer.status == MTLCommandBufferStatusError) {
-            throwRuntime(env, [@"Kernel failed: " stringByAppendingString:commandBuffer.error.localizedDescription]);
-            return 0;
+// A batch of dispatches in one command buffer. The compute encoder is serial: each dispatch sees
+// the results of the ones before it.
+@interface CMBatch : NSObject
+@property(nonatomic, strong) id<MTLCommandBuffer> commandBuffer;
+@property(nonatomic, strong) id<MTLComputeCommandEncoder> encoder;
+@end
+
+@implementation CMBatch
+@end
+
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_beginBatch(JNIEnv *env, jclass cls, jlong contextHandle) {
+    @autoreleasepool {
+        CMContext *context = fromHandle(contextHandle);
+        CMBatch *batch = [CMBatch new];
+        batch.commandBuffer = [context.queue commandBuffer];
+        batch.encoder = [batch.commandBuffer computeCommandEncoder];
+        return toHandle(batch);
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_addDispatch(JNIEnv *env, jclass cls, jlong batchHandle,
+        jlong pipelineHandle, jlongArray bufferHandles, jlongArray textureHandles, jint threads) {
+    @autoreleasepool {
+        CMBatch *batch = fromHandle(batchHandle);
+        if (threads > 0) {
+            encodeDispatch(env, batch.encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads);
         }
-        return (jlong) ((commandBuffer.GPUEndTime - commandBuffer.GPUStartTime) * 1e9);
+    }
+}
+
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_runBatch(JNIEnv *env, jclass cls, jlong batchHandle) {
+    @autoreleasepool {
+        CMBatch *batch = CFBridgingRelease((void *) (intptr_t) batchHandle);
+        [batch.encoder endEncoding];
+        return finish(env, batch.commandBuffer);
     }
 }
 
