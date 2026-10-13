@@ -93,6 +93,8 @@ public class FeatureHarness {
     });
     compare("baseline_no_sun_sampling", s -> s.setSunSamplingStrategy(SunSamplingStrategy.OFF));
     compare("water_wave_shading_default", s -> s.setWaterShadingStrategy(WaterShadingStrategy.SIMPLEX));
+    compare("water_waves_simplex_close", s -> { waterView(s); s.setWaterShadingStrategy(WaterShadingStrategy.SIMPLEX); });
+    compare("water_waves_tiled_close", s -> { waterView(s); s.setWaterShadingStrategy(WaterShadingStrategy.TILED_NORMALMAP); });
     compare("cyan_stained_glass_wall", s -> wall(s, tag("minecraft:cyan_stained_glass"), 2));
     compare("cyan_stained_glass_pane_wall", s -> wall(s, tag("minecraft:cyan_stained_glass_pane",
         "east", "true", "west", "true", "north", "false", "south", "false", "waterlogged", "false"), 1));
@@ -122,6 +124,10 @@ public class FeatureHarness {
     toggle("emitters_enabled", s -> { night(s); s.setEmittersEnabled(false); },
         s -> { night(s); s.setEmittersEnabled(true); });
     allowBlack = false;
+    toggle("water_waves", FeatureHarness::waterView,
+        s -> { waterView(s); s.setWaterShadingStrategy(WaterShadingStrategy.SIMPLEX); });
+    toggle("water_waves_tiled", FeatureHarness::waterView,
+        s -> { waterView(s); s.setWaterShadingStrategy(WaterShadingStrategy.TILED_NORMALMAP); });
     toggle("water_visibility", s -> s.setWaterVisibility(9), s -> s.setWaterVisibility(1), true, true);
     toggle("water_opacity", s -> s.setWaterOpacity(0.1), s -> s.setWaterOpacity(0.8));
     // With sun sampling OFF, the CPU reference at CPU_SPP is so noisy (sun texture fireflies) that two renders
@@ -185,6 +191,12 @@ public class FeatureHarness {
     s.sky().setCloudsEnabled(true);
     s.sky().setCloudYOffset(30);
     s.sky().setCloudXOffset(90);
+  }
+
+  /** Camera just above the pool, looking over the water at a shallow angle (mostly reflections). */
+  static void waterView(Scene s) {
+    s.camera().setPosition(new Vector3(32, 6, 13));
+    s.camera().setView(Math.PI / 2, -Math.PI / 2 + 0.3, 0);
   }
 
   /** Camera looking up into the sky. */
