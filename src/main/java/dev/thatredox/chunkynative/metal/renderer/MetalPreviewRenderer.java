@@ -52,7 +52,6 @@ public class MetalPreviewRenderer implements Renderer {
         long context = metal.context;
 
         sceneLoader.ensureLoad(scene);
-        long pipeline = metal.previewPipeline(AtmosphereData.kernelDefines(scene));
 
         CameraData camera = new CameraData(scene);
         float[] cameraSettings = camera.needsRayGeneration() ? CameraData.generateRays(scene, false) : camera.settings;
@@ -61,15 +60,19 @@ public class MetalPreviewRenderer implements Renderer {
              MetalBuffer water = MetalBuffer.ofFloats(context, WaterData.pack(scene));
              MetalBuffer atmosphere = MetalBuffer.ofInts(context, AtmosphereData.pack(scene));
              MetalBuffer canvasConfig = MetalBuffer.ofInts(context, CameraData.canvasConfig(scene));
-             MetalBuffer result = new MetalBuffer(context, 4L * imageData.length)) {
+             MetalBuffer result = new MetalBuffer(context, 4L * imageData.length);
+             BlockTracing tracing = new BlockTracing(sceneLoader)) {
+            long pipeline = metal.previewPipeline(tracing.defines(AtmosphereData.kernelDefines(scene)));
+            tracing.bind(context, pipeline, sceneLoader);
 
             // Buffers and textures in the order the preview kernel declares them (rayTracer.c).
-            long[] buffers = {
+            long[] buffers = tracing.buffers(new long[] {
                     projectorType.handle,
                     cameraBuffer.handle,
 
                     sceneLoader.getOctreeDepth().handle,
                     sceneLoader.getOctreeData().handle,
+            }, new long[] {
                     sceneLoader.getWaterOctreeDepth().handle,
                     sceneLoader.getWaterOctreeData().handle,
 
@@ -91,7 +94,7 @@ public class MetalPreviewRenderer implements Renderer {
 
                     canvasConfig.handle,
                     result.handle,
-            };
+            });
             long[] textures = {
                     sceneLoader.getTexturePalette().getAtlas().handle,
             };

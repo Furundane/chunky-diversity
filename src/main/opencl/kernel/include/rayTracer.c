@@ -65,6 +65,10 @@ __kernel void render(
 
     __global const int* octreeDepth,
     __global const int* octreeData,
+#ifdef CHUNKYCL_HWRT
+    primitive_acceleration_structure hwAccel,  // World octree as boxes (hwrt.h), Metal only
+    intersection_function_table<> hwFunctions,
+#endif
     __global const int* waterOctreeDepth,
     __global const int* waterOctreeData,
 
@@ -97,6 +101,10 @@ __kernel void render(
     Scene scene;
     scene.materialPalette = MaterialPalette_new(matPalette);
     scene.octree = Octree_create(octreeData, *octreeDepth);
+#ifdef CHUNKYCL_HWRT
+    scene.hwAccel = hwAccel;
+    scene.hwFunctions = hwFunctions;
+#endif
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.atmosphere = atmosphere;
@@ -237,6 +245,10 @@ __kernel void preview(
 
     __global const int* octreeDepth,
     __global const int* octreeData,
+#ifdef CHUNKYCL_HWRT
+    primitive_acceleration_structure hwAccel,  // World octree as boxes (hwrt.h), Metal only
+    intersection_function_table<> hwFunctions,
+#endif
     __global const int* waterOctreeDepth,
     __global const int* waterOctreeData,
 
@@ -276,6 +288,10 @@ __kernel void preview(
     Scene scene;
     scene.materialPalette = MaterialPalette_new(matPalette);
     scene.octree = Octree_create(octreeData, *octreeDepth);
+#ifdef CHUNKYCL_HWRT
+    scene.hwAccel = hwAccel;
+    scene.hwFunctions = hwFunctions;
+#endif
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.atmosphere = atmosphere;

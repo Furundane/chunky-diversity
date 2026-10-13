@@ -1,6 +1,7 @@
 package dev.thatredox.chunkynative.opencl;
 
 import dev.thatredox.chunkynative.metal.MetalContext;
+import dev.thatredox.chunkynative.metal.ui.MetalTab;
 import dev.thatredox.chunkynative.metal.renderer.MetalPathTracingRenderer;
 import dev.thatredox.chunkynative.metal.renderer.MetalPreviewRenderer;
 import dev.thatredox.chunkynative.opencl.context.ContextManager;
@@ -63,6 +64,9 @@ public class ChunkyCl implements Plugin {
 
             // Add the new tab
             transformed.add(new ChunkyClTab(chunky.getSceneManager().getScene()));
+            if (MetalContext.isSupported()) {
+                transformed.add(new MetalTab(chunky.getSceneManager().getScene()));
+            }
 
             return transformed;
         });

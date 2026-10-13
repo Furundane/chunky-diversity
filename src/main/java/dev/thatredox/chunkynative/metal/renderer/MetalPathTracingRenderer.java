@@ -58,11 +58,18 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         private final MetalBuffer atmosphere;
         private final int pixels;
         private final long pipeline;
+        private final BlockTracing tracing;
+        // -Dchunkymetal.profile=true prints the GPU time per pass when the job ends.
+        private static final boolean PROFILE = Boolean.getBoolean("chunkymetal.profile");
+        private long gpuNanos = 0;
+        private int passes = 0;
 
         MetalRenderJob(Scene scene, float[] passBuffer) {
             this.scene = scene;
             sceneLoader.ensureLoad(scene);
-            pipeline = metal.renderPipeline(AtmosphereData.kernelDefines(scene));
+            tracing = new BlockTracing(sceneLoader);
+            pipeline = metal.renderPipeline(tracing.defines(AtmosphereData.kernelDefines(scene)));
+            tracing.bind(metal.context, pipeline, sceneLoader);
 
             long context = metal.context;
             CameraData camera = new CameraData(scene);
@@ -104,12 +111,13 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             bufferSpp.writeInt(0, spp);
 
             // Buffers and textures in the order the render kernel declares them (rayTracer.c).
-            long[] buffers = {
+            long[] buffers = tracing.buffers(new long[] {
                     projectorType.handle,
                     cameraSettings.handle,
 
                     sceneLoader.getOctreeDepth().handle,
                     sceneLoader.getOctreeData().handle,
+            }, new long[] {
                     sceneLoader.getWaterOctreeDepth().handle,
                     sceneLoader.getWaterOctreeData().handle,
 
@@ -134,11 +142,12 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     canvasConfig.handle,
                     rayDepth.handle,
                     buffer.handle,
-            };
+            });
             long[] textures = {
                     sceneLoader.getTexturePalette().getAtlas().handle,
             };
-            Metal.dispatch(metal.context, pipeline, buffers, textures, pixels);
+            gpuNanos += Metal.dispatch(metal.context, pipeline, buffers, textures, pixels);
+            passes++;
         }
 
         @Override
@@ -157,6 +166,10 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             rayDepth.close();
             water.close();
             atmosphere.close();
+            tracing.close();
+            if (PROFILE && passes > 0) {
+                System.out.printf(java.util.Locale.ROOT, "METAL_PROFILE passes=%d gpuMsPerPass=%.2f%n", passes, gpuNanos / 1e6 / passes);
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ import dev.thatredox.chunkynative.metal.renderer.MetalSceneLoader;
 import dev.thatredox.chunkynative.opencl.context.KernelLoader;
 import se.llbit.log.Log;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -16,12 +17,23 @@ public class MetalContext {
     public final MetalSceneLoader sceneLoader;
     private final Map<String, Long> renderPipelines = new HashMap<>();
 
+    /** Kernel define that traces the world octree with hardware ray tracing (hwrt.h). */
+    public static final String HWRT_DEFINE = "CHUNKYCL_HWRT";
+
     private static volatile MetalContext instance;
 
     private MetalContext() {
         context = Metal.createContext();
         sceneLoader = new MetalSceneLoader(context);
         renderPipeline();
+    }
+
+    /** The defines with {@link #HWRT_DEFINE} added when a block acceleration structure is in use. */
+    public static String[] withAcceleration(String[] defines, long blockAccel) {
+        if (blockAccel == 0) return defines;
+        String[] result = Arrays.copyOf(defines, defines.length + 1);
+        result[defines.length] = HWRT_DEFINE;
+        return result;
     }
 
     /** The render kernel compiled with the given defines (see AtmosphereData.kernelDefines), cached. */
@@ -39,7 +51,10 @@ public class MetalContext {
         return renderPipelines.computeIfAbsent(key, k -> {
             long t0 = System.currentTimeMillis();
             // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
-            long pipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c", defines), function, false);
+            String source = KernelLoader.loadSource("kernel", "rayTracer.c", defines);
+            long pipeline = Arrays.asList(defines).contains(HWRT_DEFINE)
+                    ? Metal.compileRt(context, source, function, false, "HwRt_firstBlock")
+                    : Metal.compile(context, source, function, false);
             Log.infof("ChunkyCL Metal: %s, kernel [%s] compiled in %d ms",
                     Metal.deviceName(context), k, System.currentTimeMillis() - t0);
             return pipeline;

@@ -12,10 +12,15 @@ import dev.thatredox.chunkynative.common.export.primitives.PackedSun;
 import dev.thatredox.chunkynative.common.export.texture.AbstractTextureLoader;
 import dev.thatredox.chunkynative.common.scene.SkyData;
 import dev.thatredox.chunkynative.common.state.SkyState;
+import dev.thatredox.chunkynative.metal.BlockAcceleration;
+import dev.thatredox.chunkynative.metal.Metal;
 import dev.thatredox.chunkynative.metal.util.MetalBuffer;
 import dev.thatredox.chunkynative.util.FunctionCache;
 import se.llbit.chunky.renderer.ResetReason;
 import se.llbit.chunky.renderer.scene.Scene;
+import se.llbit.log.Log;
+
+import java.util.function.Consumer;
 
 
 /** Uploads a scene to Metal buffers and textures. Metal version of ClSceneLoader. */
@@ -32,6 +37,15 @@ public class MetalSceneLoader extends AbstractSceneLoader {
     protected MetalBuffer octreeDepth = null;
     protected MetalBuffer waterOctreeData = null;
     protected MetalBuffer waterOctreeDepth = null;
+    private int worldDepth;
+
+    // Block acceleration structure (hardware ray tracing) and what it was built from.
+    private long blockAccel = 0;
+    private BlockAcceleration blockAccelMode = null;
+    private MetalBuffer blockAccelOctree = null;
+    private ResourcePalette<PackedBlock> blockAccelPalette = null;
+    private static volatile String accelerationStatus = "";
+    private static volatile Consumer<String> statusListener = null;
 
     public MetalSceneLoader(long context) {
         this.context = context;
@@ -65,10 +79,12 @@ public class MetalSceneLoader extends AbstractSceneLoader {
 
     @Override
     protected boolean loadOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
+        releaseBlockAcceleration();
         if (octreeData != null) octreeData.close();
         if (octreeDepth != null) octreeDepth.close();
         octreeData = uploadOctree(octree, length, blockMapping);
         octreeDepth = MetalBuffer.ofInt(context, depth);
+        worldDepth = depth;
         return true;
     }
 
@@ -120,6 +136,61 @@ public class MetalSceneLoader extends AbstractSceneLoader {
     @Override
     protected ResourcePalette<PackedTriangleModel> createTriangleModelPalette() {
         return new MetalPackedResourcePalette<>(context);
+    }
+
+    /**
+     * The block acceleration structure for the current {@link BlockAcceleration} setting, built when
+     * the setting, the world octree or the block palette changed; 0 to use the octree march (also
+     * when the structure can't be built, e.g. without enough memory). Callers that keep the handle
+     * beyond the current render take their own reference ({@link Metal#retain}).
+     */
+    public synchronized long blockAcceleration() {
+        BlockAcceleration mode = BlockAcceleration.current();
+        if (mode == blockAccelMode && octreeData == blockAccelOctree && blockPalette == blockAccelPalette) {
+            return blockAccel;
+        }
+        releaseBlockAcceleration();
+        blockAccelMode = mode;
+        blockAccelOctree = octreeData;
+        blockAccelPalette = blockPalette;
+        if (mode == BlockAcceleration.OFF || octreeData == null) {
+            setStatus("Using the octree");
+            return 0;
+        }
+        try {
+            blockAccel = Metal.buildBlockAccel(context, octreeData.handle, worldDepth, getBlockPalette().handle, mode.sectionShift, 0);
+            long[] info = Metal.blockAccelInfo(blockAccel);
+            setStatus(String.format("%,d boxes, %.0f MB, built in %.1f s", info[0], (info[1] + info[2]) / 1e6, info[3] / 1e9));
+            Log.infof("ChunkyCL Metal: %s: %s", mode.label, accelerationStatus);
+        } catch (RuntimeException e) {
+            blockAccel = 0;
+            setStatus("Using the octree: " + e.getMessage());
+            Log.warn("ChunkyCL Metal: could not use ray tracing hardware: " + e.getMessage());
+        }
+        return blockAccel;
+    }
+
+    private synchronized void releaseBlockAcceleration() {
+        Metal.release(blockAccel);
+        blockAccel = 0;
+        blockAccelMode = null;
+        blockAccelOctree = null;
+        blockAccelPalette = null;
+    }
+
+    private static void setStatus(String status) {
+        accelerationStatus = status;
+        Consumer<String> listener = statusListener;
+        if (listener != null) listener.accept(status);
+    }
+
+    /** What the block acceleration setting currently does, for the UI. */
+    public static String accelerationStatus() {
+        return accelerationStatus;
+    }
+
+    public static void setStatusListener(Consumer<String> listener) {
+        statusListener = listener;
     }
 
     public MetalBuffer getOctreeData() {

@@ -18,7 +18,8 @@ rootProject {
             t.mainClass = main
             t.workingDir = harnessDir
             t.jvmArgs "-Dchunkycl.profileMode=${p.findProperty('profileMode') ?: 0}", "-Dchunky.home=${new File(p.findProperty('chunkyHome') ?: new File(harnessDir, 'chunkyhome').path).canonicalPath}", "-Xmx${p.findProperty('heap') ?: '6g'}",
-                    "-Dharness.gpu=${p.findProperty('gpu') ?: 'ChunkyClRenderer'}", "-Dharness.out=${p.findProperty('harnessOut') ?: 'out'}"
+                    "-Dharness.gpu=${p.findProperty('gpu') ?: 'ChunkyClRenderer'}", "-Dharness.out=${p.findProperty('harnessOut') ?: 'out'}",
+                    "-Dchunkymetal.blockAcceleration=${p.findProperty('blockAccel') ?: ''}", "-Dchunkymetal.profile=true"
         }
         p.tasks.register('runHarness', JavaExec) { t ->
             common(t, 'harness.FeatureHarness')

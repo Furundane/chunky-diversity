@@ -159,6 +159,10 @@ public class FeatureHarness {
     System.out.println(report);
     System.out.printf("CPU reference renders from cache: %d, total time %.1fs%n", cacheHits,
         (System.currentTimeMillis() - startTime) / 1000.0);
+    if (GPU.contains("Metal")) {
+      System.out.println("Metal block tracing: " + dev.thatredox.chunkynative.metal.BlockAcceleration.current()
+          + ", " + dev.thatredox.chunkynative.metal.renderer.MetalSceneLoader.accelerationStatus());
+    }
     System.exit(0);
   }
 
