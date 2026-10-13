@@ -26,6 +26,7 @@ public class MetalPackedResourcePalette<T extends Packer> implements ResourcePal
     public MetalBuffer get() {
         if (buffer == null) {
             buffer = MetalBuffer.ofInts(context, palette);
+            palette = null;  // Uploaded; the palette is locked from now on
         }
         return buffer;
     }

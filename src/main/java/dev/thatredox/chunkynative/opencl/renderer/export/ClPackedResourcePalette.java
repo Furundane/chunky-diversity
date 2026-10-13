@@ -27,6 +27,7 @@ public class ClPackedResourcePalette<T extends Packer> implements ResourcePalett
     public ClIntBuffer build() {
         if (buffer == null) {
             buffer = new ClIntBuffer(palette, context);
+            palette = null;  // Uploaded; the palette is locked from now on
         }
         return buffer;
     }
@@ -37,6 +38,12 @@ public class ClPackedResourcePalette<T extends Packer> implements ResourcePalett
 
     @Override
     public void close() {
-        buffer.close();
+        if (buffer != null) buffer.close();
+    }
+
+    /** Called when the scene loader replaces this palette: free the GPU buffer now rather than at GC. */
+    @Override
+    public void release() {
+        close();
     }
 }

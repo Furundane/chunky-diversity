@@ -2,6 +2,7 @@ package dev.thatredox.chunkynative.opencl;
 
 import dev.thatredox.chunkynative.metal.MetalContext;
 import dev.thatredox.chunkynative.metal.renderer.MetalPathTracingRenderer;
+import dev.thatredox.chunkynative.metal.renderer.MetalPreviewRenderer;
 import dev.thatredox.chunkynative.opencl.context.ContextManager;
 import dev.thatredox.chunkynative.opencl.renderer.ClSceneLoader;
 import dev.thatredox.chunkynative.opencl.renderer.OpenClPathTracingRenderer;
@@ -52,6 +53,7 @@ public class ChunkyCl implements Plugin {
         if (MetalContext.isSupported()) {
             // The kernel is compiled when the renderer is first used.
             Chunky.addRenderer(new MetalPathTracingRenderer());
+            Chunky.addPreviewRenderer(new MetalPreviewRenderer());
         }
 
         RenderControlsTabTransformer prev = chunky.getRenderControlsTabTransformer();

@@ -64,6 +64,11 @@ public class MetalBuffer implements AutoCloseable {
         Metal.writeFloats(handle, 4 * index, data, offset, length);
     }
 
+    /** Reads {@code data.length} ints from the start of the buffer. */
+    public void readInts(int[] data) {
+        Metal.readInts(handle, 0, data, 0, data.length);
+    }
+
     /** Reads {@code data.length} floats from the start of the buffer. */
     public void readFloats(float[] data) {
         Metal.readFloats(handle, 0, data, 0, data.length);

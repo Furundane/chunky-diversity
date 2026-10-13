@@ -26,6 +26,7 @@ public class NativeCleaner extends Thread {
             if (!cleaned) {
                 cleaned = true;
                 action.run();
+                INSTANCE.cleaners.remove(this);
             }
         }
     }

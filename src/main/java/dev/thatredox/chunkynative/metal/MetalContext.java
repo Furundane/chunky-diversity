@@ -25,13 +25,23 @@ public class MetalContext {
     }
 
     /** The render kernel compiled with the given defines (see AtmosphereData.kernelDefines), cached. */
-    public synchronized long renderPipeline(String... defines) {
-        return renderPipelines.computeIfAbsent(String.join(",", defines), key -> {
+    public long renderPipeline(String... defines) {
+        return pipeline("render", defines);
+    }
+
+    /** The preview kernel compiled with the given defines, cached. */
+    public long previewPipeline(String... defines) {
+        return pipeline("preview", defines);
+    }
+
+    private synchronized long pipeline(String function, String... defines) {
+        String key = function + ":" + String.join(",", defines);
+        return renderPipelines.computeIfAbsent(key, k -> {
             long t0 = System.currentTimeMillis();
             // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
-            long pipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c", defines), "render", false);
-            Log.infof("ChunkyCL Metal: %s, render kernel [%s] compiled in %d ms",
-                    Metal.deviceName(context), key, System.currentTimeMillis() - t0);
+            long pipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c", defines), function, false);
+            Log.infof("ChunkyCL Metal: %s, kernel [%s] compiled in %d ms",
+                    Metal.deviceName(context), k, System.currentTimeMillis() - t0);
             return pipeline;
         });
     }

@@ -72,6 +72,8 @@ public final class Metal {
 
     public static native void readFloats(long buffer, long byteOffset, float[] data, int offset, int length);
 
+    public static native void readInts(long buffer, long byteOffset, int[] data, int offset, int length);
+
     /** Creates an RGBA8 (unsigned normalized) 2D texture array. */
     public static native long newTexture2DArray(long context, int width, int height, int layers);
 

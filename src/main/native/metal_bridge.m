@@ -140,6 +140,14 @@ JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_writeFloats(J
     }
 }
 
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_readInts(JNIEnv *env, jclass cls, jlong bufferHandle,
+        jlong byteOffset, jintArray data, jint offset, jint length) {
+    void *source = bufferRange(env, bufferHandle, byteOffset, (jlong) length * 4);
+    if (source != NULL) {
+        (*env)->SetIntArrayRegion(env, data, offset, length, (const jint *) source);
+    }
+}
+
 JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_readFloats(JNIEnv *env, jclass cls, jlong bufferHandle,
         jlong byteOffset, jfloatArray data, jint offset, jint length) {
     void *source = bufferRange(env, bufferHandle, byteOffset, (jlong) length * 4);

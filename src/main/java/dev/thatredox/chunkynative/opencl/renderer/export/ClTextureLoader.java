@@ -23,7 +23,13 @@ public class ClTextureLoader extends AtlasTextureLoader implements AutoCloseable
 
     @Override
     public void close() {
-        texture.close();
+        if (texture != null) texture.close();
+    }
+
+    /** Called when the scene loader replaces this atlas: free it now rather than at GC (256 MB per layer). */
+    @Override
+    public void release() {
+        close();
     }
 
     @Override
