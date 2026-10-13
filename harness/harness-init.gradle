@@ -1,0 +1,58 @@
+// Adds the CPU-vs-GPU comparison harness to the chunky-opencl build without touching its build files.
+//   ./gradlew -I harness/harness-init.gradle -PchunkyDir=../chunky runHarness   (or harness/run-harness.sh)
+def harnessDir = new File(buildscript.sourceFile.parentFile, '').absoluteFile
+
+// Init scripts also apply to included builds (the Chunky checkout); only touch the plugin build.
+if (gradle.parent != null) return
+
+rootProject {
+    afterEvaluate { p ->
+        p.sourceSets.create('harness') { ss ->
+            ss.java.srcDir(new File(harnessDir, 'src'))
+            ss.compileClasspath += p.sourceSets.main.output + p.configurations.runtimeClasspath
+            ss.runtimeClasspath += p.sourceSets.main.output + p.configurations.runtimeClasspath
+        }
+        def common = { t, String main ->
+            t.dependsOn p.tasks.named('harnessClasses')
+            t.classpath = p.sourceSets.harness.runtimeClasspath
+            t.mainClass = main
+            t.workingDir = harnessDir
+            t.jvmArgs "-Dchunkycl.profileMode=${p.findProperty('profileMode') ?: 0}", "-Dchunky.home=${new File(p.findProperty('chunkyHome') ?: new File(harnessDir, 'chunkyhome').path).canonicalPath}", '-Xmx6g',
+                    "-Dharness.gpu=${p.findProperty('gpu') ?: 'ChunkyClRenderer'}", "-Dharness.out=${p.findProperty('harnessOut') ?: 'out'}"
+        }
+        p.tasks.register('runHarness', JavaExec) { t ->
+            common(t, 'harness.FeatureHarness')
+            if (p.hasProperty('cases')) t.args p.property('cases').toString().split(',')
+        }
+        p.tasks.register('runCpuProfile', JavaExec) { t ->
+            common(t, 'harness.CpuProfile')
+            t.args((p.findProperty('profileSeconds') ?: '15').toString(), (p.findProperty('profileLabel') ?: 'run').toString())
+        }
+        p.tasks.register('runRealScene', JavaExec) { t ->
+            common(t, 'harness.RealSceneRender')
+            t.args((p.findProperty('sceneArgs') ?: '').toString().split(';'))
+        }
+        p.tasks.register('runProfile', JavaExec) { t ->
+            common(t, 'harness.ProfileRun')
+            t.args((p.findProperty('profileArgs') ?: 'synthetic;1920;1080;200').toString().split(';'))
+        }
+        p.tasks.register('runNoiseRender', JavaExec) { t ->
+            common(t, 'harness.NoiseRender')
+            t.args((p.findProperty('noiseArgs') ?: '').toString().split(';'))
+        }
+        p.tasks.register('runPreviewDebug', JavaExec) { t ->
+            common(t, 'harness.PreviewDebug')
+        }
+        // Chunky GUI with the plugin attached (ChunkyCl.main), using the harness Chunky home (-PchunkyHome).
+        p.tasks.register('runChunky', JavaExec) { t ->
+            common(t, 'dev.thatredox.chunkynative.opencl.ChunkyCl')
+        }
+        p.tasks.register('runClProbe', JavaExec) { t ->
+            common(t, 'harness.ClProbe')
+        }
+        p.tasks.register('runGpuDebug', JavaExec) { t ->
+            common(t, 'harness.GpuDebug')
+            t.args(p.findProperty('dbgRenderer') ?: 'ChunkyClRenderer')
+        }
+    }
+}
