@@ -8,3 +8,4 @@
 /harness/out*/
 /harness/cache/
 /harness/chunkyhome/
+.DS_Store
