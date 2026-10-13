@@ -119,9 +119,12 @@ public class FeatureHarness {
     allowBlack = false;
     toggle("water_visibility", s -> s.setWaterVisibility(9), s -> s.setWaterVisibility(1), true, true);
     toggle("water_opacity", s -> s.setWaterOpacity(0.1), s -> s.setWaterOpacity(0.8));
-    toggle("water_opacity_no_sun_sampling",
-        s -> { s.setSunSamplingStrategy(SunSamplingStrategy.OFF); s.setWaterOpacity(0.1); },
-        s -> { s.setSunSamplingStrategy(SunSamplingStrategy.OFF); s.setWaterOpacity(0.8); });
+    // With sun sampling OFF, the CPU reference at CPU_SPP is so noisy (sun texture fireflies) that two renders
+    // of the same scene differ as much as this toggle changes the image, so compare each setting instead.
+    for (double opacity : new double[] {0.1, 0.8}) {
+      compare("water_opacity_" + opacity + "_no_sun_sampling",
+          s -> { s.setSunSamplingStrategy(SunSamplingStrategy.OFF); s.setWaterOpacity(opacity); });
+    }
     toggle("custom_water_color", s -> {}, s -> {
       s.setUseCustomWaterColor(true);
       s.setWaterColor(new Vector3(0.8, 0.1, 0.1));
