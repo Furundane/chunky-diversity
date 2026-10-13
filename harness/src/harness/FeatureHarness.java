@@ -97,6 +97,10 @@ public class FeatureHarness {
     compare("cyan_stained_glass_pane_wall", s -> wall(s, tag("minecraft:cyan_stained_glass_pane",
         "east", "true", "west", "true", "north", "false", "south", "false", "waterlogged", "false"), 1));
     compare("clear_glass_wall", s -> wall(s, tag("minecraft:glass"), 1));
+    compare("fog_uniform", s -> { s.setFogMode(FogMode.UNIFORM); s.setFogDensity(1); });
+    compare("fog_layered", FeatureHarness::layeredFog);
+    compare("clouds", FeatureHarness::clouds);
+    compare("clouds_overhead", s -> { clouds(s); lookUp(s); });
     compare("dof_fisheye", s -> {
       s.camera().setProjectionMode(ProjectionMode.FISHEYE);
       s.camera().setDof(1.5); s.camera().setSubjectDistance(30);
@@ -105,7 +109,8 @@ public class FeatureHarness {
     // --- Toggle tests: does changing a setting change the GPU image at all? ---
     toggle("water_blocks", s -> {}, s -> {}, false, true);
     toggle("fog_uniform", s -> {}, s -> { s.setFogMode(FogMode.UNIFORM); s.setFogDensity(0.05); });
-    toggle("fog_layered", s -> {}, s -> { s.setFogMode(FogMode.LAYERED); s.setFogDensity(0.2); });
+    toggle("fog_layered", s -> {}, FeatureHarness::layeredFog);
+    toggle("clouds_enabled", s -> { s.sky().setCloudYOffset(30); lookUp(s); }, s -> { clouds(s); lookUp(s); });
     toggle("sky_light_modifier", s -> {}, s -> s.sky().setSkyLight(0.25));
     toggle("sun_intensity", s -> {}, s -> s.sun().setIntensity(3.0));
     toggle("sun_sampling_off_vs_fast", s -> s.setSunSamplingStrategy(SunSamplingStrategy.OFF),
@@ -164,6 +169,27 @@ public class FeatureHarness {
     s.setSunSamplingStrategy(SunSamplingStrategy.FAST);
     s.setEmittersEnabled(true);
     s.setEmitterSamplingStrategy(EmitterSamplingStrategy.NONE);
+  }
+
+  /** One fog layer around the height of the feature blocks. */
+  static void layeredFog(Scene s) {
+    s.setFogMode(FogMode.LAYERED);
+    s.fog.addLayer();
+    s.fog.setY(0, 6);
+    s.fog.setBreadth(0, 3);
+    s.fog.setDensity(0, 1);
+  }
+
+  /** Clouds low enough to be in view, shifted so that some are right above the scene. */
+  static void clouds(Scene s) {
+    s.sky().setCloudsEnabled(true);
+    s.sky().setCloudYOffset(30);
+    s.sky().setCloudXOffset(90);
+  }
+
+  /** Camera looking up into the sky. */
+  static void lookUp(Scene s) {
+    s.camera().setView(Math.PI / 2, -Math.PI / 2 - 0.7, 0);
   }
 
   static CompoundTag tag(String name, String... properties) {
