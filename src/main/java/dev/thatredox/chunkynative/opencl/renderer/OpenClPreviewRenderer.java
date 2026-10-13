@@ -1,5 +1,6 @@
 package dev.thatredox.chunkynative.opencl.renderer;
 
+import dev.thatredox.chunkynative.common.scene.AtmosphereData;
 import dev.thatredox.chunkynative.opencl.context.ContextManager;
 import dev.thatredox.chunkynative.opencl.renderer.ClSceneLoader;
 import dev.thatredox.chunkynative.opencl.renderer.scene.*;
@@ -52,7 +53,7 @@ public class OpenClPreviewRenderer implements Renderer {
         sceneLoader.ensureLoad(manager.bufferedScene);
 
         // Load the kernel
-        cl_kernel kernel = clCreateKernel(context.renderer.kernel, "preview", null);
+        cl_kernel kernel = clCreateKernel(context.renderer.get(AtmosphereData.kernelDefines(scene)), "preview", null);
 
         ClCamera camera = new ClCamera(scene, context.context);
         ClMemory buffer = new ClMemory(clCreateBuffer(context.context.context, CL_MEM_WRITE_ONLY,
@@ -64,10 +65,12 @@ public class OpenClPreviewRenderer implements Renderer {
         }, context.context);
 
         ClWater water = new ClWater(scene, context.context);
+        ClIntBuffer atmosphere = new ClIntBuffer(AtmosphereData.pack(scene), context.context);
         try (ClCamera ignored1 = camera;
              ClMemory ignored2 = buffer;
              ClIntBuffer ignored3 = clCanvasConfig;
-             ClWater ignored4 = water) {
+             ClWater ignored4 = water;
+             ClIntBuffer ignored5 = atmosphere) {
 
             // Generate the camera rays
             camera.generate(null, false);
@@ -98,6 +101,7 @@ public class OpenClPreviewRenderer implements Renderer {
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyLight.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSun().get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(water.settings.get()));
+            clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(atmosphere.get()));
 
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(clCanvasConfig.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(buffer.get()));

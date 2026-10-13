@@ -1,6 +1,7 @@
 package dev.thatredox.chunkynative.metal.renderer;
 
 import dev.thatredox.chunkynative.common.renderer.GpuPathTracingRenderer;
+import dev.thatredox.chunkynative.common.scene.AtmosphereData;
 import dev.thatredox.chunkynative.common.scene.CameraData;
 import dev.thatredox.chunkynative.common.scene.WaterData;
 import dev.thatredox.chunkynative.metal.Metal;
@@ -54,11 +55,14 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         private final MetalBuffer canvasConfig;
         private final MetalBuffer rayDepth;
         private final MetalBuffer water;
+        private final MetalBuffer atmosphere;
         private final int pixels;
+        private final long pipeline;
 
         MetalRenderJob(Scene scene, float[] passBuffer) {
             this.scene = scene;
             sceneLoader.ensureLoad(scene);
+            pipeline = metal.renderPipeline(AtmosphereData.kernelDefines(scene));
 
             long context = metal.context;
             CameraData camera = new CameraData(scene);
@@ -73,6 +77,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             canvasConfig = MetalBuffer.ofInts(context, CameraData.canvasConfig(scene));
             rayDepth = MetalBuffer.ofInt(context, scene.getRayDepth());
             water = MetalBuffer.ofFloats(context, WaterData.pack(scene));
+            atmosphere = MetalBuffer.ofInts(context, AtmosphereData.pack(scene));
             pixels = passBuffer.length / 3;
         }
 
@@ -122,6 +127,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     sceneLoader.getSkyLight().handle,
                     sceneLoader.getSun().handle,
                     water.handle,
+                    atmosphere.handle,
 
                     randomSeed.handle,
                     bufferSpp.handle,
@@ -132,7 +138,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             long[] textures = {
                     sceneLoader.getTexturePalette().getAtlas().handle,
             };
-            Metal.dispatch(metal.context, metal.renderPipeline, buffers, textures, pixels);
+            Metal.dispatch(metal.context, pipeline, buffers, textures, pixels);
         }
 
         @Override
@@ -150,6 +156,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             canvasConfig.close();
             rayDepth.close();
             water.close();
+            atmosphere.close();
         }
     }
 }

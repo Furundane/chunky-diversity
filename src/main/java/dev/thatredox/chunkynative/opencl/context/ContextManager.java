@@ -5,6 +5,9 @@ import org.jocl.CLException;
 import org.jocl.cl_program;
 import se.llbit.log.Log;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class ContextManager {
     public final Device device;
     public final ClContext context;
@@ -48,10 +51,19 @@ public class ContextManager {
     }
 
     public static class Renderer {
-        public final cl_program kernel;
+        private final ClContext context;
+        private final Map<String, cl_program> variants = new HashMap<>();
 
         private Renderer(ClContext context) {
-            this.kernel = KernelLoader.loadProgram(context, "kernel", "rayTracer.c");
+            this.context = context;
+            // Build the plain variant now, so a broken kernel shows up when the plugin loads.
+            get();
+        }
+
+        /** The render kernel program built with the given defines (see AtmosphereData.kernelDefines). */
+        public synchronized cl_program get(String... defines) {
+            return variants.computeIfAbsent(String.join(",", defines),
+                    key -> context.loadProgram(KernelLoader.loadSource("kernel", "rayTracer.c", defines)));
         }
     }
 }

@@ -3,6 +3,7 @@ package dev.thatredox.chunkynative.opencl.renderer;
 import static org.jocl.CL.*;
 
 import dev.thatredox.chunkynative.common.renderer.GpuPathTracingRenderer;
+import dev.thatredox.chunkynative.common.scene.AtmosphereData;
 import dev.thatredox.chunkynative.common.scene.CameraData;
 import dev.thatredox.chunkynative.opencl.context.ContextManager;
 import dev.thatredox.chunkynative.opencl.renderer.scene.*;
@@ -48,6 +49,7 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
         private final ClIntBuffer clCanvasConfig;
         private final ClIntBuffer clRayDepth;
         private final ClWater water;
+        private final ClIntBuffer atmosphere;
         private final int pixels;
 
         ClRenderJob(Scene scene, float[] passBuffer) {
@@ -55,7 +57,7 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             sceneLoader.ensureLoad(scene);
 
             // Load the kernel
-            kernel = clCreateKernel(context.renderer.kernel, "render", null);
+            kernel = clCreateKernel(context.renderer.get(AtmosphereData.kernelDefines(scene)), "render", null);
 
             // Generate the camera
             camera = new ClCamera(scene, context.context);
@@ -68,6 +70,7 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             clCanvasConfig = new ClIntBuffer(CameraData.canvasConfig(scene), context.context);
             clRayDepth = new ClIntBuffer(scene.getRayDepth(), context.context);
             water = new ClWater(scene, context.context);
+            atmosphere = new ClIntBuffer(AtmosphereData.pack(scene), context.context);
             pixels = passBuffer.length / 3;
         }
 
@@ -114,6 +117,7 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyLight.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSun().get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(water.settings.get()));
+            clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(atmosphere.get()));
 
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(randomSeed.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(bufferSpp.get()));
@@ -143,6 +147,7 @@ public class OpenClPathTracingRenderer extends GpuPathTracingRenderer {
             clCanvasConfig.close();
             clRayDepth.close();
             water.close();
+            atmosphere.close();
             clReleaseKernel(kernel);
         }
     }

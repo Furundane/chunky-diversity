@@ -10,6 +10,7 @@
 #define RAY_DIFFUSE  0b1000 // The last bounce was a diffuse reflection
 
 #define HIT_WATER    0b1    // The intersection is a water surface (entering or leaving water)
+#define HIT_CLOUD    0b10   // The intersection is a cloud surface
 
 typedef struct {
     float3 origin;

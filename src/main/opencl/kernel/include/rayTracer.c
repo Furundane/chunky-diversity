@@ -83,6 +83,7 @@ __kernel void render(
     __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,
+    __global const int* atmosphere,  // Fog and clouds, see AtmosphereData
 
     __global const int* randomSeed,
     __global const int* bufferSpp,
@@ -98,6 +99,9 @@ __kernel void render(
     scene.octree = Octree_create(octreeData, *octreeDepth);
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
+    scene.atmosphere = atmosphere;
+    scene.fogMode = atmosphere[0];
+    scene.clouds = atmosphere[10] != 0;
     scene.sunStrategy = (int) waterSettings[9];
     scene.emitterIntensity = waterSettings[10];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);
@@ -139,6 +143,12 @@ __kernel void render(
         Material material;
 
         if (closestIntersect(scene, textureAtlas, ray, &record, &sample, &material)) {
+#ifdef CHUNKYCL_FOG  // Only compiled in when the scene has fog (see AtmosphereData.kernelDefines)
+            // Fog over the segment to this surface, if it went through air or water (like PathTracer)
+            if (ray.material == 0) {
+                Scene_groundFog(scene, textureAtlas, sun, ray, record.distance, &color, &throughput, random);
+            }
+#endif
             if (ray.flags & RAY_WATER) {
                 throughput *= Water_attenuation(scene.water, record.distance);
             }
@@ -198,6 +208,12 @@ __kernel void render(
             // Like Sky.getSkyColorInterpolated / getSkyColor in Chunky: camera rays see the apparent sky light.
             float skyMultiplier = depth == 0 ? skyLight[1] : skyLight[0];
             intersectSky(skyTexture, skyMultiplier, sun, textureAtlas, ray, Scene_sunMode(scene, ray), &sample);
+#ifdef CHUNKYCL_FOG
+            // Sky fog only for rays that see the sky directly or by specular reflection (PathTracer)
+            if (!(ray.flags & RAY_DIFFUSE)) {
+                sample.color.xyz = Scene_skyFog(scene, textureAtlas, sun, ray, sample.color.xyz, random);
+            }
+#endif
             throughput *= sample.color.xyz;
             color += sample.emittance * throughput;
             break;
@@ -234,6 +250,7 @@ __kernel void preview(
     __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,
+    __global const int* atmosphere,  // Fog and clouds, see AtmosphereData
 
     __global const int* canvasConfig,
     __global int* res
@@ -256,6 +273,9 @@ __kernel void preview(
     scene.octree = Octree_create(octreeData, *octreeDepth);
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
+    scene.atmosphere = atmosphere;
+    scene.fogMode = atmosphere[0];
+    scene.clouds = atmosphere[10] != 0;
     scene.sunStrategy = (int) waterSettings[9];
     scene.emitterIntensity = waterSettings[10];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);

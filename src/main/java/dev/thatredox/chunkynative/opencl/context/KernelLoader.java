@@ -70,9 +70,14 @@ public class KernelLoader {
      *
      * @param base          Kernel base directory name.
      * @param kernelName    Kernel entrypoint filename.
+     * @param defines       Preprocessor symbols to define (as 1) before the source.
      */
-    public static String loadSource(String base, String kernelName) {
-        return inlineHeaders(file -> {
+    public static String loadSource(String base, String kernelName, String... defines) {
+        StringBuilder prefix = new StringBuilder();
+        for (String define : defines) {
+            prefix.append("#define ").append(define).append(" 1\n");
+        }
+        return prefix + inlineHeaders(file -> {
             String program = instance.rawSourceReader.apply(base, file);
             Matcher matcher = openclIncludeMatcher.matcher(program);
             program = matcher.replaceFirst("// #include \"../opencl.h\"");

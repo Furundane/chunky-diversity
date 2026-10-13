@@ -4,25 +4,36 @@ import dev.thatredox.chunkynative.metal.renderer.MetalSceneLoader;
 import dev.thatredox.chunkynative.opencl.context.KernelLoader;
 import se.llbit.log.Log;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * The Metal device and the render kernel, compiled from the same source as the OpenCL kernel
  * (see kernel/include/compat.h). Created on first use.
  */
 public class MetalContext {
     public final long context;
-    public final long renderPipeline;
     public final MetalSceneLoader sceneLoader;
+    private final Map<String, Long> renderPipelines = new HashMap<>();
 
     private static volatile MetalContext instance;
 
     private MetalContext() {
         context = Metal.createContext();
-        long t0 = System.currentTimeMillis();
-        // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
-        renderPipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c"), "render", false);
-        Log.infof("ChunkyCL Metal: %s, render kernel compiled in %d ms",
-                Metal.deviceName(context), System.currentTimeMillis() - t0);
         sceneLoader = new MetalSceneLoader(context);
+        renderPipeline();
+    }
+
+    /** The render kernel compiled with the given defines (see AtmosphereData.kernelDefines), cached. */
+    public synchronized long renderPipeline(String... defines) {
+        return renderPipelines.computeIfAbsent(String.join(",", defines), key -> {
+            long t0 = System.currentTimeMillis();
+            // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
+            long pipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c", defines), "render", false);
+            Log.infof("ChunkyCL Metal: %s, render kernel [%s] compiled in %d ms",
+                    Metal.deviceName(context), key, System.currentTimeMillis() - t0);
+            return pipeline;
+        });
     }
 
     public static MetalContext get() {

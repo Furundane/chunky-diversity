@@ -10,6 +10,7 @@
 #include "bvh.h"
 #include "sky.h"
 #include "water.h"
+#include "atmosphere.h"
 
 
 typedef struct {
@@ -20,6 +21,11 @@ typedef struct {
     BlockPalette blockPalette;
     MaterialPalette materialPalette;
     WaterSettings water;
+    // Fog and clouds (atmosphere.h). Only these are kept here; the rest is read from the buffer when
+    // needed, since the scene is passed around by value and a larger struct slows the kernel down.
+    __global const int* atmosphere;
+    int fogMode;
+    bool clouds;
     int sunStrategy;  // SUN_* flags from the scene's sun sampling strategy
     float emitterIntensity;  // Scene emitter intensity, 0 when emitters are disabled
     int drawDepth;
@@ -52,6 +58,27 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
         hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
         hit |= Bvh_intersect(self.actorBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
 
+#ifdef CHUNKYCL_CLOUDS  // Only compiled in when the scene has clouds (see AtmosphereData.kernelDefines)
+        // Clouds come after the blocks, which do not set the record flags, and before water, which does.
+        float cloudT;
+        float3 cloudNormal;
+        if (self.clouds && Clouds_intersect(self.atmosphere, tempRay.origin, tempRay.direction, tempRecord.distance, &cloudT, &cloudNormal)) {
+            tempRecord.distance = cloudT;
+            tempRecord.normal = cloudNormal;
+            tempRecord.texCoord = make_float2(0, 0);
+            tempRecord.material = 0;
+            tempRecord.block = 0;
+            tempRecord.flags = HIT_CLOUD;
+            // CloudMaterial: opaque white
+            sample->color = make_float4(1, 1, 1, 1);
+            sample->emittance = 0;
+            sample->specular = 0;
+            sample->metalness = 0;
+            sample->roughness = 0;
+            hit = true;
+        }
+#endif
+
         // Water is tested last so that only a closer water surface sets HIT_WATER.
         if (ray.flags & RAY_WATER) {
             hit |= Octree_exitWater(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
@@ -67,7 +94,19 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
 
         *record = tempRecord;
         record->distance = distance;
-        *mat = Material_get(self.materialPalette, record->material);
+        if (record->flags & HIT_CLOUD) {
+            Material cloud;
+            cloud.flags = 0;
+            cloud.tint = 0;
+            cloud.textureSize = 0;
+            cloud.color = 0xFFFFFFFF;
+            cloud.normal_emittance = 0;
+            cloud.specular_metalness_roughness = 0;
+            cloud.ior = DEFAULT_IOR;
+            *mat = cloud;
+        } else {
+            *mat = Material_get(self.materialPalette, record->material);
+        }
         return true;
     }
     return false;
@@ -122,6 +161,75 @@ float3 Scene_directLightAttenuation(Scene self, image2d_array_t atlas, Ray ray) 
         ray.origin += ray.direction * record.distance;
     }
     return attenuation * w;
+}
+
+// Sunlight scattered by fog at a point: how much of the sun is visible from there (PathTracer samples a
+// random sun direction and calls getDirectLightAttenuation). The sun emittance is not applied, like Chunky.
+float3 Scene_fogScatter(Scene self, image2d_array_t atlas, Sun sun, float3 point, Random random) {
+    Ray atmos;
+    atmos.origin = point;
+    atmos.direction = Sun_sampleDirection(sun, random);
+    atmos.material = 0;
+    atmos.flags = 0;
+    return Scene_directLightAttenuation(self, atlas, atmos);
+}
+
+// Fog over a ray segment through air or water that ends at a surface (Fog.addGroundFog): light from
+// beyond the segment is attenuated and fog-colored sunlight is scattered in.
+void Scene_groundFog(Scene self, image2d_array_t atlas, Sun sun, Ray ray, float distance,
+                     __private float3* color, __private float3* throughput, Random random) {
+    if (self.fogMode == FOG_NONE || !(distance > 0)) {
+        return;
+    }
+    Atmosphere a = Atmosphere_new(self.atmosphere);
+    float extinction;
+    float offset;
+    float inscatter;
+    if (a.fogMode == FOG_UNIFORM) {
+        float density = a.uniformDensity * FOG_EXTINCTION_FACTOR;
+        extinction = exp(-distance * density);
+        offset = clamp(distance * Random_nextFloat(random), EPS, fmax(EPS, distance - EPS));
+        inscatter = a.fastFog ? 1 - extinction : distance * density * exp(-offset * density);
+    } else {
+        float y1 = ray.origin.y;
+        float y2 = y1 + ray.direction.y * distance;
+        extinction = exp(Fog_layeredIntegral(a, y1, y2) / Fog_clampDy(ray.direction.y));
+        offset = Fog_sampleLayeredOffset(a, random, y1, y2, ray.direction.y);
+        inscatter = 1 - extinction;
+    }
+    float3 scatter = Scene_fogScatter(self, atlas, sun, ray.origin + ray.direction * offset, random);
+    *color += *throughput * scatter * a.fogColor * inscatter;
+    *throughput *= extinction;
+}
+
+// Fog in front of the sky, for rays that see the sky directly or through specular reflections
+// (Fog.addSkyFog).
+float3 Scene_skyFog(Scene self, image2d_array_t atlas, Sun sun, Ray ray, float3 skyColor, Random random) {
+    if (self.fogMode == FOG_NONE) {
+        return skyColor;
+    }
+    Atmosphere a = Atmosphere_new(self.atmosphere);
+    if (a.fogMode == FOG_UNIFORM) {
+        if (a.uniformDensity <= 0) {
+            return skyColor;
+        }
+        float fog = 1;
+        if (ray.direction.y > 0) {
+            fog = 1 - ray.direction.y;
+            fog *= fog;
+        }
+        fog *= a.skyFogDensity;
+        return (1 - fog) * skyColor + fog * a.fogColor;
+    } else if (a.fogMode == FOG_LAYERED) {
+        float dy = ray.direction.y;
+        float y1 = ray.origin.y;
+        float y2 = y1 + dy * FOG_LIMIT;
+        float extinction = exp(Fog_layeredIntegral(a, y1, y2) / Fog_clampDy(dy));
+        float offset = Fog_sampleLayeredOffset(a, random, y1, dy > 0 ? a.yMax : a.yMin, dy);
+        float3 scatter = Scene_fogScatter(self, atlas, sun, ray.origin + ray.direction * offset, random);
+        return skyColor * extinction + (1 - extinction) * scatter * a.fogColor;
+    }
+    return skyColor;
 }
 
 // Direct sunlight arriving at a diffuse surface hit by the ray (before the surface color is applied).
