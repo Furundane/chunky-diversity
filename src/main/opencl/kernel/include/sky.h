@@ -12,12 +12,12 @@ typedef struct {
     int flags;
     int textureSize;
     int texture;
-    float intensity;
     float luminosity;
     float3 su;
     float3 sv;
     float3 sw;
-    float4 color;
+    float3 color;                       // Sun color, for the sun seen by diffuse rays
+    float3 apparentTextureBrightness;   // For the sun texture seen directly
     float radius;
     float3 emittance;      // Sun.getEmittance(): color * intensity ^ gamma, used for direct light
     float luminosityPdf;
@@ -33,15 +33,15 @@ Sun Sun_new(__global const int* data) {
     sun.flags = data[0];
     sun.textureSize = data[1];
     sun.texture = data[2];
-    sun.intensity = as_float(data[3]);
-    sun.luminosity = as_float(data[6]);
-    sun.color = colorFromArgb(data[7]);
-    sun.radius = as_float(data[8]);
-    sun.emittance = make_float3(as_float(data[9]), as_float(data[10]), as_float(data[11]));
-    sun.luminosityPdf = as_float(data[12]);
-    
-    float phi = as_float(data[4]);
-    float theta = as_float(data[5]);
+    sun.luminosity = as_float(data[5]);
+    sun.radius = as_float(data[6]);
+    sun.color = make_float3(as_float(data[7]), as_float(data[8]), as_float(data[9]));
+    sun.apparentTextureBrightness = make_float3(as_float(data[10]), as_float(data[11]), as_float(data[12]));
+    sun.emittance = make_float3(as_float(data[13]), as_float(data[14]), as_float(data[15]));
+    sun.luminosityPdf = as_float(data[16]);
+
+    float phi = as_float(data[3]);
+    float theta = as_float(data[4]);
     float r = fabs(cos(phi));
     
     sun.sw = make_float3(cos(theta) * r, sin(phi), sin(theta) * r);
@@ -59,7 +59,9 @@ Sun Sun_new(__global const int* data) {
 bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, int mode, __private MaterialSample* sample) {
     float3 direction = ray.direction;
 
-    if (mode == SUN_NONE || !(self.flags & 1) || dot(direction, self.sw) < 0.5f) {
+    // The sun texture is only drawn for rays that see the sun directly (Sun.intersect); diffuse rays see
+    // it regardless (Sun.intersectDiffuse).
+    if (mode == SUN_NONE || (mode == SUN_TEXTURE && !(self.flags & 1)) || dot(direction, self.sw) < 0.5f) {
         return false;
     }
 
@@ -69,15 +71,13 @@ bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, int mode, __private
     if (a >= 0 && a < width2) {
         float b = M_PI_2_F - acos(dot(direction, self.sv)) + width;
         if (b >= 0 && b < width2) {
+            float3 texture = Atlas_read_uv(a / width2, b / width2, self.texture, self.textureSize, atlas).xyz;
             if (mode == SUN_DIFFUSE) {
-                float4 color = self.color;
-                color *= self.luminosity;
-                sample->color += color;
+                // Sky.addSunColorDiffuseSun: the sun intensity does not apply here
+                sample->color.xyz += texture * self.color * 10 * self.luminosity;
             } else {
-                float4 color = Atlas_read_uv(a / width2, b / width2,
-                                             self.texture, self.textureSize, atlas);
-                color *= self.intensity;
-                sample->color += color;
+                // Sky.addSunColor
+                sample->color.xyz += texture * self.apparentTextureBrightness * 10;
             }
             return true;
         }

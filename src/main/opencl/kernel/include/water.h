@@ -175,7 +175,10 @@ bool Water_scatter(WaterSettings ws, IntersectionRecord record, MaterialSample s
     IntersectionRecord facing = record;
     facing.normal = n;
 
-    if (sample.specular > 0 && Random_nextFloat(random) < sample.specular) {
+    // Chunky takes the specular chance from the material being entered, so a ray leaving the water
+    // (into air) has none.
+    bool leaving = (ray->flags & RAY_WATER) != 0;
+    if (!leaving && sample.specular > 0 && Random_nextFloat(random) < sample.specular) {
         ray->direction = _Material_specularReflection(facing, sample, *ray, random);
         return false;
     }
