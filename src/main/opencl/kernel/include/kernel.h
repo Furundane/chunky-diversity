@@ -21,6 +21,7 @@ typedef struct {
     MaterialPalette materialPalette;
     WaterSettings water;
     int sunStrategy;  // SUN_* flags from the scene's sun sampling strategy
+    float emitterIntensity;  // Scene emitter intensity, 0 when emitters are disabled
     int drawDepth;
 } Scene;
 

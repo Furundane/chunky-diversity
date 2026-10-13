@@ -99,6 +99,7 @@ __kernel void render(
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.sunStrategy = (int) waterSettings[9];
+    scene.emitterIntensity = waterSettings[10];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette);
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette);
@@ -159,9 +160,13 @@ __kernel void render(
             MaterialPdfSample pdfSample = Material_samplePdf(material, record, sample, ray, n1,
                     scene.water.fancierTranslucency, scene.water.transmissivityCap, random);
             throughput *= pdfSample.spectrum;
-            color += pdfSample.spectrum * sample.emittance * 13.0f * throughput;
 
             bool diffuse = !pdfSample.specular && !pdfSample.transmitted;
+            // Emitters, like PathTracer.doDiffuseReflection: only on diffuse reflection, with Chunky's quadratic
+            // emittance mapping (color squared; pdfSample.spectrum is the color and is already in the throughput).
+            if (diffuse) {
+                color += pdfSample.spectrum * sample.emittance * scene.emitterIntensity * throughput;
+            }
             // Next event estimation: light from the sun reaching this point directly. Like Chunky, there
             // is no scattering (and so no sun sampling) at the last bounce.
             if (diffuse && (scene.sunStrategy & SUN_SAMPLING) && depth + 1 < *rayDepth) {
@@ -250,6 +255,7 @@ __kernel void preview(
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.sunStrategy = (int) waterSettings[9];
+    scene.emitterIntensity = waterSettings[10];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette);
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette);

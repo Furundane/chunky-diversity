@@ -8,7 +8,8 @@ import se.llbit.math.Vector3;
  * Water settings for the kernel (see {@code WaterSettings} in water.h):
  * color (3 floats, linear), opacity, visibility, index of refraction, use custom color, and the scene
  * translucency settings (transmissivity cap, fancier translucency) that other translucent materials use too,
- * and the sun sampling strategy flags ({@code SUN_*} in kernel.h).
+ * the sun sampling strategy flags ({@code SUN_*} in kernel.h), and the emitter intensity (0 when emitters
+ * are disabled).
  */
 public class WaterData {
     private WaterData() {}
@@ -33,6 +34,7 @@ public class WaterData {
                 (float) scene.getTransmissivityCap(),
                 scene.getFancierTranslucency() ? 1 : 0,
                 sunStrategyFlags(scene.getSunSamplingStrategy()),
+                scene.getEmittersEnabled() ? (float) scene.getEmitterIntensity() : 0,
         };
     }
 
