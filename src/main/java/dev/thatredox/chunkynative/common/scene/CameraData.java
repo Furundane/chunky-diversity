@@ -87,7 +87,14 @@ public class CameraData {
                 float ox = jitter ? random.nextFloat(): 0.5f;
                 float oy = jitter ? random.nextFloat(): 0.5f;
 
-                cam.calcViewRay(ray, -halfWidth + (i + ox + cropX) * invHeight, -0.5 + (j + oy + cropY) * invHeight);
+                double x = -halfWidth + (i + ox + cropX) * invHeight;
+                double y = -0.5 + (j + oy + cropY) * invHeight;
+                // The overload with a Random applies depth of field; the one without does not.
+                if (jitter) {
+                    cam.calcViewRay(ray, random, x, y);
+                } else {
+                    cam.calcViewRay(ray, x, y);
+                }
                 ray.o.sub(scene.getOrigin());
 
                 System.arraycopy(Util.vector3ToFloat(ray.o), 0, rays, offset, 3);
