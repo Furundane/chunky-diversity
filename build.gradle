@@ -41,7 +41,36 @@ javafx {
     configuration = 'provided'
 }
 
+// Metal backend: JNI bridge in src/main/native, built with clang on macOS only. On other systems
+// the jar has no bridge library and the Metal renderer is not registered.
+def jniHeaderDir = layout.buildDirectory.dir('generated/jni')
+def metalBridgeDir = layout.buildDirectory.dir('native')
+def isMac = System.getProperty('os.name').toLowerCase().contains('mac')
+
+tasks.named('compileJava') {
+    options.headerOutputDirectory = jniHeaderDir
+}
+
+tasks.register('metalBridge', Exec) {
+    onlyIf { isMac }
+    dependsOn 'compileJava'
+    def source = file('src/main/native/metal_bridge.m')
+    def output = metalBridgeDir.map { it.file('native/libchunkymetal.dylib') }
+    def javaHome = System.getProperty('java.home')
+    inputs.file source
+    inputs.dir jniHeaderDir
+    outputs.file output
+    doFirst { output.get().asFile.parentFile.mkdirs() }
+    commandLine 'clang', '-fobjc-arc', '-dynamiclib', '-O2', '-Wall', '-Werror',
+            '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
+            "-I${javaHome}/include", "-I${javaHome}/include/darwin", "-I${jniHeaderDir.get().asFile}",
+            '-framework', 'Foundation', '-framework', 'Metal',
+            source.path, '-o', output.get().asFile.path
+}
+
 processResources {
+    dependsOn 'metalBridge'
+    from metalBridgeDir
     from "src/main/opencl/kernel/include", { into "kernel" }
     from "src/main/opencl/tonemap/include", { into "tonemap" }
 }
