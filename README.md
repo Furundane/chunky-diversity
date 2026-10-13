@@ -1,10 +1,21 @@
-# OpenCL Plugin (personal fork)
+# chunky-diversity (personal fork of ChunkyCL)
 
 > **About this fork:** I made these changes for my own renders. If they look useful to you, feel free to use them too :)
 > The work was done with the help of Claude (an AI assistant) and checked by rendering the same scenes with
 > Chunky's CPU path tracer and comparing the results. Based on upstream commit `d5621bc`.
+>
+> The longer-term idea is one GPU kernel for several backends: **OpenCL** and **Metal** work now, CUDA may follow.
 
 ### What's changed
+
+- **Metal renderer on macOS.** A second renderer, `ChunkyCL (Metal)`, runs the same kernel source as the
+  OpenCL renderer, compiled as Metal Shading Language (see `src/main/opencl/kernel/include/compat.h`).
+  On an M4 Pro it gives the same results as OpenCL in all harness tests and is about 1.28x faster than
+  Apple's OpenCL (26 ms instead of 33 ms per 1024x1024 pass on my test scene).
+- **Runs on Apple's OpenCL.** Context creation, program build and the tonemap kernel failed or crashed
+  on macOS; fixed.
+- **Texture atlas fix.** The kernel read the atlas layer with the wrong mask, so scenes whose textures
+  fill more than one atlas layer read some textures from the wrong layer.
 
 - **Headless renders no longer come out black.** The render loop counted GPU passes as samples before they
   were merged into the sample buffer, so a `chunky -render` with fewer than 1024 spp could finish with an
@@ -24,7 +35,7 @@
   noise level on the same scene; the mean brightness is unchanged (checked against a 4000 spp reference).
 - **Less CPU work while rendering:** buffer merges and post processing run at most 4 times per second while
   the canvas is visible (about 1.5x more spp/s at 1080p in my test).
-- **JOCL updated to 2.0.6**, which includes an arm64 (Apple Silicon) macOS library. Not tested on a Mac yet.
+- **JOCL updated to 2.0.6**, which includes an arm64 (Apple Silicon) macOS library.
 - **Builds with current tooling:** Gradle 8.10, Java 17. Build against a local Chunky checkout with
   `./gradlew jar -PchunkyDir=../chunky` (the published `2.5.0-SNAPSHOT` is from March 2024).
 - Small fixes: a stray `jdk.jpackage.internal.Log` import, OpenCL events that were never released,
@@ -74,6 +85,10 @@ Some settings have been added to improve render performance.
 ---
 
 ## Development
+`harness/` compares the GPU renderers with Chunky's CPU path tracer on small test scenes
+(`./harness/run-harness.sh runHarness`, see the script for more tasks). It expects a Chunky checkout in
+`../chunky`. The Metal bridge (`src/main/native`) is only built on macOS.
+
 This project is setup to work with IntelliJ and CLion. The base directory is intended to be opened in IntelliJ and the `src/main/opencl` directory in CLion.
 
 For hot reloading, add `-DchunkyClHotReload="<src/main/opencl directory>"` as a JVM option.
