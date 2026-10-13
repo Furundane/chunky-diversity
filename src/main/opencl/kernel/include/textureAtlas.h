@@ -10,7 +10,10 @@ const sampler_t Atlas_sampler = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP_
 float4 Atlas_read_xy(int x, int y, int location, image2d_array_t atlas) {
     x += ((location >> 22) & 0x1FF) * 16;
     y += ((location >> 13) & 0x1FF) * 16;
-    int d = location & 0x7FFFF;
+    // Location layout: x (9 bits) << 22 | y (9 bits) << 13 | layer (13 bits), see AtlasTexture.setLocation.
+    // The layer mask used to be 0x7FFFF, which mixed y into the layer; OpenCL clamps the layer index so
+    // that went unnoticed with a single-layer atlas.
+    int d = location & 0x1FFF;
 
     return read_imagef(atlas, Atlas_sampler, (int4) (x, y, d, 0));
 }
