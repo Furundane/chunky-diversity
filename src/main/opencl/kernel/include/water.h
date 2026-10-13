@@ -23,6 +23,7 @@ typedef struct {
     // Scene translucency settings, also used for other translucent materials
     float transmissivityCap;
     bool fancierTranslucency;
+    float3 textureColor;  // Average color of the water texture, used instead of the texture (like Chunky)
 } WaterSettings;
 
 WaterSettings WaterSettings_new(__global const float* data) {
@@ -34,6 +35,7 @@ WaterSettings WaterSettings_new(__global const float* data) {
     ws.useCustomColor = data[6] != 0;
     ws.transmissivityCap = data[7];
     ws.fancierTranslucency = data[8] != 0;
+    ws.textureColor = vload3(0, data + 11);
     return ws;
 }
 
@@ -155,8 +157,10 @@ bool Water_enter(WaterCorners c, float3 o, float3 d, float maxT, __private float
     return hit;
 }
 
+// Water surface color. Chunky shades water with the average color of the water texture
+// (Texture.water.getAvgColorLinear in WaterModel), not the texel at the hit point.
 float3 Water_color(WaterSettings ws, MaterialSample sample) {
-    return ws.useCustomColor ? ws.color : sample.color.xyz * ws.color;
+    return ws.useCustomColor ? ws.color : ws.textureColor * ws.color;
 }
 
 // Water fog: attenuation over a distance travelled inside water.
