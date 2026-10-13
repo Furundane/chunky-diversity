@@ -11,6 +11,12 @@ repositories {
     }
 }
 
+// Keep in sync with src/main/resources/plugin.json
+version = '0.4.0'
+base {
+    archivesName = 'chunky-diversity'
+}
+
 java {
     // Chunky 2.5 requires Java 17
     sourceCompatibility = JavaVersion.VERSION_17

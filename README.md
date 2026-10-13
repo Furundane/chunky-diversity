@@ -60,11 +60,11 @@ This is a plugin for [Chunky](https://github.com/chunky-dev/chunky) which harnes
 ## Installation
 
 ### Note: This requires the `2.5.0` snapshots.
-Download the [latest plugin release](https://github.com/chunky-dev/chunky-opencl/releases) and extract it. In the Chunky Launcher, expand `Advanced Settings` and click on `Manage plugins`. In the `Plugin Manager` window click on `Add` and select the `.jar` file in the extracted zip file. Click on `Save` and start Chunky as usual.
+Download the `.jar` from the [latest release of this fork](https://github.com/Furundane/chunky-diversity/releases). In the Chunky Launcher, expand `Advanced Settings` and click on `Manage plugins`. In the `Plugin Manager` window click on `Add` and select the `.jar` file. Click on `Save` and start Chunky as usual. Remove the original ChunkyCL plugin first if you have it; the two use the same renderer names.
 
 ![image](https://user-images.githubusercontent.com/42661490/116319916-28ef2580-a76c-11eb-9f93-86d444a349fd.png)
 
-Select `ChunkyCL` as your renderer for the scene in the `Advanced` tab.
+Select `ChunkyClRenderer` (OpenCL) or, on macOS, `ChunkyMetalRenderer` as your renderer for the scene in the `Advanced` tab.
 
 ![image](https://user-images.githubusercontent.com/42661490/122492084-fc040580-cf99-11eb-9b08-b166dc25db41.png)
 
