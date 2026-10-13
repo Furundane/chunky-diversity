@@ -7,6 +7,7 @@
 #include "camera.h"
 #include "bvh.h"
 #include "sky.h"
+#include "water.h"
 
 Ray ray_to_camera(
         const __global int* projectorType,
@@ -64,6 +65,8 @@ __kernel void render(
 
     __global const int* octreeDepth,
     __global const int* octreeData,
+    __global const int* waterOctreeDepth,
+    __global const int* waterOctreeData,
 
     __global const int* bPalette,
     __global const int* quadModels,
@@ -79,6 +82,7 @@ __kernel void render(
     image2d_t skyTexture,
     __global const float* skyIntensity,
     __global const int* sunData,
+    __global const float* waterSettings,
 
     __global const int* randomSeed,
     __global const int* bufferSpp,
@@ -92,6 +96,9 @@ __kernel void render(
     Scene scene;
     scene.materialPalette = MaterialPalette_new(matPalette);
     scene.octree = Octree_create(octreeData, *octreeDepth);
+    scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
+    scene.water = WaterSettings_new(waterSettings);
+    scene.sunStrategy = (int) waterSettings[9];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette);
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette);
@@ -106,29 +113,82 @@ __kernel void render(
 
     ray.material = 0;
     ray.flags = 0;
+    if (Octree_isInsideWater(scene.waterOctree, scene.blockPalette, ray.origin)) {
+        ray.flags |= RAY_WATER;
+    }
 
     float3 color = (float3) (0.0);
     float3 throughput = (float3) (1.0);
 
     for (int depth = 0; depth < *rayDepth; depth++) {
+        // Russian roulette: from the third bounce on, end paths that carry little light with a probability
+        // based on their throughput and boost the survivors to compensate, so the expected result is unchanged.
+        if (depth >= 3) {
+            float survival = fmin(1.0f, fmax(throughput.x, fmax(throughput.y, throughput.z)));
+            if (Random_nextFloat(random) >= survival) {
+                break;
+            }
+            throughput /= survival;
+        }
+
         IntersectionRecord record = IntersectionRecord_new();
         MaterialSample sample;
         Material material;
 
         if (closestIntersect(scene, textureAtlas, ray, &record, &sample, &material)) {
-            MaterialPdfSample pdfSample = Material_samplePdf(material, record, sample, ray, random);
+            if (ray.flags & RAY_WATER) {
+                throughput *= Water_attenuation(scene.water, record.distance);
+            }
+
+            if (record.flags & HIT_WATER) {
+                float3 hitPoint = ray.origin + ray.direction * record.distance;
+                Ray incoming = ray;
+                bool diffuse = Water_scatter(scene.water, record, sample, &ray, &throughput, random);
+                bool transmitted = ((ray.flags ^ incoming.flags) & RAY_WATER) != 0;
+                if (diffuse && (scene.sunStrategy & SUN_SAMPLING) && depth + 1 < *rayDepth) {
+                    color += throughput * Scene_sunDirectLight(scene, textureAtlas, sun, incoming, record, random);
+                }
+                // Like Chunky, a transmitted ray keeps the diffuse/specular state of the previous bounce.
+                if (diffuse) ray.flags |= RAY_DIFFUSE;
+                else if (!transmitted) ray.flags &= ~RAY_DIFFUSE;
+                ray.origin = hitPoint + ray.direction * OFFSET;
+                continue;
+            }
+
+            float n1 = (ray.flags & RAY_WATER) ? scene.water.ior : DEFAULT_IOR;
+            MaterialPdfSample pdfSample = Material_samplePdf(material, record, sample, ray, n1,
+                    scene.water.fancierTranslucency, scene.water.transmissivityCap, random);
             throughput *= pdfSample.spectrum;
             color += pdfSample.spectrum * sample.emittance * 13.0f * throughput;
 
-            ray.origin = ray.origin + ray.direction * (record.distance - OFFSET);
-            ray.direction = pdfSample.direction;
-            ray.origin += ray.direction * OFFSET;
+            bool diffuse = !pdfSample.specular && !pdfSample.transmitted;
+            // Next event estimation: light from the sun reaching this point directly. Like Chunky, there
+            // is no scattering (and so no sun sampling) at the last bounce.
+            if (diffuse && (scene.sunStrategy & SUN_SAMPLING) && depth + 1 < *rayDepth) {
+                color += throughput * Scene_sunDirectLight(scene, textureAtlas, sun, ray, record, random);
+            }
+            // Like Chunky, a transmitted ray keeps the diffuse/specular state of the previous bounce.
+            if (diffuse) ray.flags |= RAY_DIFFUSE;
+            else if (!pdfSample.transmitted) ray.flags &= ~RAY_DIFFUSE;
+
+            if (pdfSample.transmitted) {
+                // Continue on the far side of the surface, inside the block that was hit.
+                float3 hitPoint = ray.origin + ray.direction * record.distance;
+                ray.direction = pdfSample.direction;
+                ray.origin = hitPoint + ray.direction * OFFSET;
+                ray.material = record.block;
+            } else {
+                ray.origin = ray.origin + ray.direction * (record.distance - OFFSET);
+                ray.direction = pdfSample.direction;
+                ray.origin += ray.direction * OFFSET;
+                ray.material = record.medium;
+            }
 
             if (!pdfSample.specular) {
                 ray.flags |= RAY_INDIRECT;
             }
         } else {
-            intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, &sample);
+            intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, Scene_sunMode(scene, ray), &sample);
             throughput *= sample.color.xyz;
             color += sample.emittance * throughput;
             break;
@@ -147,6 +207,8 @@ __kernel void preview(
 
     __global const int* octreeDepth,
     __global const int* octreeData,
+    __global const int* waterOctreeDepth,
+    __global const int* waterOctreeData,
 
     __global const int* bPalette,
     __global const int* quadModels,
@@ -162,6 +224,7 @@ __kernel void preview(
     image2d_t skyTexture,
     __global const float* skyIntensity,
     __global const int* sunData,
+    __global const float* waterSettings,
 
     __global const int* canvasConfig,
     __global int* res
@@ -181,6 +244,9 @@ __kernel void preview(
     Scene scene;
     scene.materialPalette = MaterialPalette_new(matPalette);
     scene.octree = Octree_create(octreeData, *octreeDepth);
+    scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
+    scene.water = WaterSettings_new(waterSettings);
+    scene.sunStrategy = (int) waterSettings[9];
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette);
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette);
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette);
@@ -201,13 +267,21 @@ __kernel void preview(
     ray.material = 0;
     ray.flags = RAY_PREVIEW;
 
+    if (Octree_isInsideWater(scene.waterOctree, scene.blockPalette, ray.origin)) {
+        ray.flags |= RAY_WATER;
+    }
+
     float3 color;
     if (closestIntersect(scene, textureAtlas, ray, &record, &sample, &material)) {
         float shading = dot(record.normal, (float3) (0.25, 0.866, 0.433));
         shading = fmax(0.3f, shading);
-        color = sample.color.xyz * shading;
+        if (record.flags & HIT_WATER) {
+            color = Water_color(scene.water, sample) * shading;
+        } else {
+            color = sample.color.xyz * shading;
+        }
     } else {
-        intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, &sample);
+        intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, SUN_TEXTURE, &sample);
         color = sample.color.xyz;
     }
 

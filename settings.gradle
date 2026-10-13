@@ -1,0 +1,13 @@
+rootProject.name = 'chunky-opencl'
+
+// Build against a local Chunky checkout instead of the published (and outdated) 2.5.0-SNAPSHOT:
+//   ./gradlew jar -PchunkyDir=../chunky
+def chunkyDir = providers.gradleProperty('chunkyDir').getOrNull()
+if (chunkyDir != null) {
+    includeBuild(chunkyDir) {
+        dependencySubstitution {
+            substitute module('se.llbit:chunky-core') using project(':chunky')
+            substitute module('se.llbit:chunky-lib') using project(':lib')
+        }
+    }
+}

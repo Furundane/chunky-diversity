@@ -15,7 +15,10 @@ public class PackedMaterial implements Packer {
     /**
      * The size of a packed material in 32 bit words.
      */
-    public static final int MATERIAL_DWORD_SIZE = 6;
+    public static final int MATERIAL_DWORD_SIZE = 7;
+
+    /** Index of refraction of air, see {@code Material.DEFAULT_IOR} in Chunky. */
+    public static final float DEFAULT_IOR = 1.000293f;
 
     public final boolean hasColorTexture;
     public final boolean hasNormalEmittanceTexture;
@@ -26,13 +29,16 @@ public class PackedMaterial implements Packer {
     public final long colorTexture;
     public final int normalEmittanceTexture;
     public final int specularMetalnessRoughnessTexture;
+    public final float ior;
+    public final boolean refractive;
 
     public PackedMaterial(Texture texture, Tint tint, Material material, AbstractTextureLoader texturePalette) {
-        this(texture, tint, material.emittance, material.specular, material.metalness, material.roughness, texturePalette);
+        this(texture, getTint(tint), material.emittance, material.specular, material.metalness, material.roughness,
+                material.ior, material.refractive, texturePalette);
     }
 
     public PackedMaterial(Material material, Tint tint, AbstractTextureLoader texMap) {
-        this(material.texture, tint, material.emittance, material.specular, material.metalness, material.roughness, texMap);
+        this(material.texture, tint, material, texMap);
     }
 
     public PackedMaterial(Texture texture, Tint tint, float emittance, float specular, float metalness, float roughness, AbstractTextureLoader texMap) {
@@ -61,6 +67,13 @@ public class PackedMaterial implements Packer {
     }
 
     public PackedMaterial(Texture texture, int blockTint, float emittance, float specular, float metalness, float roughness, AbstractTextureLoader texMap) {
+        this(texture, blockTint, emittance, specular, metalness, roughness, DEFAULT_IOR, false, texMap);
+    }
+
+    public PackedMaterial(Texture texture, int blockTint, float emittance, float specular, float metalness, float roughness,
+                          float ior, boolean refractive, AbstractTextureLoader texMap) {
+        this.ior = ior;
+        this.refractive = refractive;
         this.hasColorTexture = !PersistentSettings.getSingleColorTextures();
         this.hasNormalEmittanceTexture = false;
         this.hasSpecularMetalnessRoughnessTexture = false;
@@ -73,8 +86,9 @@ public class PackedMaterial implements Packer {
     }
 
     /**
-     * Materials are packed into 6 consecutive integers:
-     * 0: Flags - 0b100 = has color texture
+     * Materials are packed into 7 consecutive integers:
+     * 0: Flags - 0b1000 = refractive
+     *            0b100 = has color texture
      *            0b010 = has normal emittance texture
      *            0b001 = has specular metalness roughness texture
      * 1: Block tint - the top 8 bits control which type of tint:
@@ -85,11 +99,13 @@ public class PackedMaterial implements Packer {
      * 2 & 3: Color texture reference
      * 4: Top 24 bits represent the surface normal. First 8 bits represent the emittance.
      * 5: First 8 bits represent the specularness. Next 8 bits represent the metalness. Next 8 bits represent the roughness.
+     * 6: Index of refraction (float bits).
      */
     @Override
     public IntArrayList pack() {
-        IntArrayList packed = new IntArrayList(6);
-        packed.add(((this.hasColorTexture ? 1 : 0) << 2) |
+        IntArrayList packed = new IntArrayList(MATERIAL_DWORD_SIZE);
+        packed.add(((this.refractive ? 1 : 0) << 3) |
+                   ((this.hasColorTexture ? 1 : 0) << 2) |
                    ((this.hasNormalEmittanceTexture ? 1 : 0) << 1) |
                    (this.hasSpecularMetalnessRoughnessTexture ? 1 : 0));
         packed.add(this.blockTint);
@@ -97,6 +113,7 @@ public class PackedMaterial implements Packer {
         packed.add((int) this.colorTexture);
         packed.add(this.normalEmittanceTexture);
         packed.add(this.specularMetalnessRoughnessTexture);
+        packed.add(Float.floatToIntBits(this.ior));
         return packed;
     }
 }

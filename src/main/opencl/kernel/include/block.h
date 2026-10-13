@@ -10,6 +10,7 @@
 #include "textureAtlas.h"
 #include "material.h"
 #include "primitives.h"
+#include "water.h"
 
 typedef struct {
     __global const int* blockPalette;
@@ -103,6 +104,26 @@ bool BlockPalette_intersectNormalizedBlock(BlockPalette self, image2d_array_t at
             }
             *record = tempRecord;
             return hit;
+        }
+        case MODEL_WATER: {
+            // Entering water from outside. Leaving water is handled by Octree_exitWater.
+            WaterCorners corners = WaterCorners_new(self.blockPalette[block + 2]);
+            float t;
+            float3 normal;
+            float2 uv;
+            if (!Water_enter(corners, tempRay.origin, tempRay.direction, record->distance, &t, &normal, &uv)) {
+                return false;
+            }
+            Material material = Material_get(materialPalette, modelPointer);
+            if (!Material_sample(material, atlas, uv, sample)) {
+                return false;
+            }
+            record->distance = t;
+            record->normal = normal;
+            record->texCoord = uv;
+            record->material = modelPointer;
+            record->flags = HIT_WATER;
+            return true;
         }
     }
 }

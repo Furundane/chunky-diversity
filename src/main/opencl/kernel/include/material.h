@@ -27,7 +27,11 @@ typedef struct {
     unsigned int color;
     unsigned int normal_emittance;
     unsigned int specular_metalness_roughness;
+    float ior;
 } Material;
+
+#define MATERIAL_REFRACTIVE 0b1000
+#define DEFAULT_IOR 1.000293f  // Air, see Material.DEFAULT_IOR in Chunky
 
 Material Material_get(MaterialPalette self, int material) {
     Material m;
@@ -37,6 +41,7 @@ Material Material_get(MaterialPalette self, int material) {
     m.color = self.palette[material + 3];
     m.normal_emittance = self.palette[material + 4];
     m.specular_metalness_roughness = self.palette[material + 5];
+    m.ior = as_float(self.palette[material + 6]);
     return m;
 }
 
@@ -172,30 +177,112 @@ typedef struct {
     float3 direction;
     float3 spectrum;
     bool specular;
+    bool transmitted;  // The ray passed through the surface into the material
 } MaterialPdfSample;
 
-MaterialPdfSample Material_samplePdf(Material self, IntersectionRecord record, MaterialSample sample, Ray ray, Random random) {
-    MaterialPdfSample out;
+// PathTracer.reassignTransmissivity
+float _Material_reassign(float from, float to, float other, float trans, float cap) {
+    return (cap * (other - 2 * to + from) + (3 * trans) * (to - from)) / (other + to - 2 * from);
+}
 
-    if (sample.metalness > 0 && sample.metalness > Random_nextFloat(random)) {
-        // Metal reflection
-        out.direction = _Material_specularReflection(record, sample, ray, random);
-        out.spectrum = sample.color.xyz;
-        out.specular = true;
+// Color of light transmitted through a translucent surface, see PathTracer.translucentRayColor. With fancier
+// translucency, channels above the transmissivity cap give their excess to the other channels. The energy
+// normalization Chunky does for caps above 1 needs the color of the next ray and is not done here.
+float3 Material_transmission(float3 color, float absorption, bool fancier, float cap) {
+    if (!fancier) {
+        return (1 - absorption) + absorption * color;
+    }
+    float shouldTrans = 1 - absorption;
+    float avg = (color.x + color.y + color.z) / 3;
+    float3 t = avg > 0 ? color * (shouldTrans / avg) : (float3) (shouldTrans);
+    float maxTrans = fmax(t.x, fmax(t.y, t.z));
+    if (maxTrans > cap) {
+        if (maxTrans == t.x) {
+            float g = _Material_reassign(t.x, t.y, t.z, shouldTrans, cap);
+            t.z = _Material_reassign(t.x, t.z, t.y, shouldTrans, cap);
+            t.y = g;
+            t.x = cap;
+        } else if (maxTrans == t.y) {
+            float r = _Material_reassign(t.y, t.x, t.z, shouldTrans, cap);
+            t.z = _Material_reassign(t.y, t.z, t.x, shouldTrans, cap);
+            t.x = r;
+            t.y = cap;
+        } else {
+            float g = _Material_reassign(t.z, t.y, t.x, shouldTrans, cap);
+            t.x = _Material_reassign(t.z, t.x, t.y, shouldTrans, cap);
+            t.y = g;
+            t.z = cap;
+        }
+    }
+    return t;
+}
+
+// Scatter a ray at a surface, following PathTracer.pathTrace: metal or specular reflection, diffuse
+// reflection with the texture alpha as probability, otherwise Fresnel reflection or transmission
+// (refracted for refractive materials) tinted by the surface color. n1 is the index of refraction of
+// the medium the ray comes from.
+MaterialPdfSample Material_samplePdf(Material self, IntersectionRecord record, MaterialSample sample, Ray ray,
+                                     float n1, bool fancier, float cap, Random random) {
+    MaterialPdfSample out;
+    out.transmitted = false;
+    out.specular = true;
+
+    // Face the incoming ray (quads are two-sided)
+    IntersectionRecord facing = record;
+    if (dot(facing.normal, ray.direction) > 0) {
+        facing.normal = -facing.normal;
+    }
+
+    bool doMetal = sample.metalness > EPS && Random_nextFloat(random) < sample.metalness;
+    if (doMetal || (sample.specular > EPS && Random_nextFloat(random) < sample.specular)) {
+        out.direction = _Material_specularReflection(facing, sample, ray, random);
+        out.spectrum = doMetal ? sample.color.xyz : (float3) (1);
         return out;
-    } else if (sample.specular > 0 && sample.specular > Random_nextFloat(random)) {
-        // Specular reflection
-        out.direction = _Material_specularReflection(record, sample, ray, random);
-        out.spectrum = 1;
-        out.specular = true;
-        return out;
-    } else {
-        // Diffuse reflection
-        out.direction = _Material_diffuseReflection(record, random);
-        out.spectrum = sample.color.xyz;
+    }
+
+    float alpha = sample.color.w;
+    float3 color = sample.color.xyz;
+    float pDiffuse = fancier ? 1 - pow(1 - alpha, fmax(color.x, fmax(color.y, color.z))) : alpha;
+    if (Random_nextFloat(random) < pDiffuse) {
+        out.direction = _Material_diffuseReflection(facing, random);
+        out.spectrum = color;
         out.specular = false;
         return out;
     }
+    float pAbsorb = fancier ? 1 - (1 - alpha) / (1 - pDiffuse + EPS) : alpha;
+
+    float3 d = ray.direction;
+    float3 n = facing.normal;
+    out.direction = d;
+    float n2 = self.ior;
+    if (n1 != n2) {
+        bool refractive = (self.flags & MATERIAL_REFRACTIVE) != 0;
+        float n1n2 = n1 / n2;
+        float cosTheta = -dot(n, d);
+        float radicand = 1 - n1n2 * n1n2 * (1 - cosTheta * cosTheta);
+        if (refractive && radicand < EPS) {
+            // Total internal reflection
+            out.direction = _Material_specularReflection(facing, sample, ray, random);
+            out.spectrum = (float3) (1);
+            return out;
+        }
+        float a = n1n2 - 1;
+        float b = n1n2 + 1;
+        float r0 = a * a / (b * b);
+        float c = 1 - cosTheta;
+        float fresnel = r0 + (1 - r0) * c * c * c * c * c;
+        if (Random_nextFloat(random) < fresnel) {
+            out.direction = _Material_specularReflection(facing, sample, ray, random);
+            out.spectrum = (float3) (1);
+            return out;
+        }
+        if (refractive) {
+            out.direction = normalize(n1n2 * d + (n1n2 * cosTheta - sqrt(radicand)) * n);
+        }
+    }
+    out.spectrum = Material_transmission(color, pAbsorb, fancier, cap);
+    out.transmitted = true;
+    return out;
 }
 
 #endif

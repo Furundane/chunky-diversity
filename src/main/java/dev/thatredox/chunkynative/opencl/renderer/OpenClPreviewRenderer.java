@@ -63,9 +63,11 @@ public class OpenClPreviewRenderer implements Renderer {
                 scene.canvasConfig.getCropX(), scene.canvasConfig.getCropY()
         }, context.context);
 
+        ClWater water = new ClWater(scene, context.context);
         try (ClCamera ignored1 = camera;
              ClMemory ignored2 = buffer;
-             ClIntBuffer ignored3 = clCanvasConfig) {
+             ClIntBuffer ignored3 = clCanvasConfig;
+             ClWater ignored4 = water) {
 
             // Generate the camera rays
             camera.generate(null, false);
@@ -78,6 +80,8 @@ public class OpenClPreviewRenderer implements Renderer {
 
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getOctreeDepth().get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getOctreeData().get()));
+            clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getWaterOctreeDepth().get()));
+            clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getWaterOctreeData().get()));
 
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getBlockPalette().get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getQuadPalette().get()));
@@ -93,6 +97,7 @@ public class OpenClPreviewRenderer implements Renderer {
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyTexture.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyIntensity.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSun().get()));
+            clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(water.settings.get()));
 
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(clCanvasConfig.get()));
             clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(buffer.get()));

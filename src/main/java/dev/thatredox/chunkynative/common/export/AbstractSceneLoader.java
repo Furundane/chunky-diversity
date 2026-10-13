@@ -28,6 +28,7 @@ public abstract class AbstractSceneLoader {
     protected WeakReference<BVH> prevWorldBvh = new WeakReference<>(null, null);
     protected WeakReference<BVH> prevActorBvh = new WeakReference<>(null, null);
     protected WeakReference<Octree.OctreeImplementation> prevOctree = new WeakReference<>(null, null);
+    protected WeakReference<Octree.OctreeImplementation> prevWaterOctree = new WeakReference<>(null, null);
 
     protected AbstractTextureLoader texturePalette = null;
     protected ResourcePalette<PackedBlock> blockPalette = null;
@@ -47,7 +48,8 @@ public abstract class AbstractSceneLoader {
         if (force ||
                 this.texturePalette == null || this.blockPalette == null || this.materialPalette == null ||
                 this.aabbPalette == null || this.quadPalette == null || this.trigPalette == null ||
-                this.prevOctree.get() != scene.getWorldOctree().getImplementation()) {
+                this.prevOctree.get() != scene.getWorldOctree().getImplementation() ||
+                this.prevWaterOctree.get() != scene.getWaterOctree().getImplementation()) {
             this.modCount = -1;
             return this.load(0, ResetReason.SCENE_LOADED, scene);
         }
@@ -144,18 +146,21 @@ public abstract class AbstractSceneLoader {
             this.actorBvh = packedActorBvh;
         }
 
-        // Need to reload octree
+        // Need to reload octrees
         Octree.OctreeImplementation impl = scene.getWorldOctree().getImplementation();
-        if (resetReason == ResetReason.SCENE_LOADED || prevOctree.get() != impl) {
-            prevOctree = new WeakReference<>(impl, null);
-            if (impl instanceof PackedOctree) {
-                assert blockMapping != null;
-                if (!loadOctree(((PackedOctree) impl).treeData, impl.getDepth(), blockMapping, blockPalette))
-                    return false;
-            } else {
+        Octree.OctreeImplementation waterImpl = scene.getWaterOctree().getImplementation();
+        if (resetReason == ResetReason.SCENE_LOADED || prevOctree.get() != impl || prevWaterOctree.get() != waterImpl) {
+            if (!(impl instanceof PackedOctree) || !(waterImpl instanceof PackedOctree)) {
                 Log.error("Octree implementation must be PACKED");
                 return false;
             }
+            assert blockMapping != null;
+            prevOctree = new WeakReference<>(impl, null);
+            prevWaterOctree = new WeakReference<>(waterImpl, null);
+            if (!loadOctree(((PackedOctree) impl).treeData, impl.getDepth(), blockMapping, blockPalette))
+                return false;
+            if (!loadWaterOctree(((PackedOctree) waterImpl).treeData, waterImpl.getDepth(), blockMapping, blockPalette))
+                return false;
         }
 
         return true;
@@ -182,6 +187,8 @@ public abstract class AbstractSceneLoader {
     }
 
     protected abstract boolean loadOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
+
+    protected abstract boolean loadWaterOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
 
     protected abstract AbstractTextureLoader createTextureLoader();
     protected abstract ResourcePalette<PackedBlock> createBlockPalette();

@@ -31,6 +31,8 @@ public class SkyState {
     private final double sunAltitude;
     private final boolean drawSun;
     private final Vector3 sunColor;
+    private final double sunLuminosity;
+    private final double sunRadius;
 
     public SkyState(Sky sky, Sun sun) {
         skymap = Reflection.getFieldValue(sky, "skymap", Texture.class);
@@ -50,6 +52,8 @@ public class SkyState {
         sunAltitude = sun.getAltitude();
         drawSun = sun.drawTexture();
         sunColor = new Vector3(sun.getColor());
+        sunLuminosity = sun.getLuminosity();
+        sunRadius = sun.radius;
 
         rotation = new Matrix3();
         Matrix3 rot = Reflection.getFieldValue(sky, "rotation", Matrix3.class);
@@ -80,6 +84,8 @@ public class SkyState {
         if (mode != skyState.mode) return false;
         if (!Objects.equals(simulatedSkyMode, skyState.simulatedSkyMode)) return false;
         if (!StateUtil.equals(sunColor, skyState.sunColor)) return false;
+        if (Double.compare(skyState.sunLuminosity, sunLuminosity) != 0) return false;
+        if (Double.compare(skyState.sunRadius, sunRadius) != 0) return false;
 
         return true;
     }

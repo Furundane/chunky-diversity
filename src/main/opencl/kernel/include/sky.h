@@ -17,7 +17,15 @@ typedef struct {
     float3 sv;
     float3 sw;
     float4 color;
+    float radius;
+    float3 emittance;      // Sun.getEmittance(): color * intensity ^ gamma, used for direct light
+    float luminosityPdf;
 } Sun;
+
+// How the sun is added when a ray escapes to the sky
+#define SUN_NONE    0  // Not at all (the sun is sampled as direct light instead)
+#define SUN_DIFFUSE 1  // As seen by diffuse reflections (Sun.intersectDiffuse)
+#define SUN_TEXTURE 2  // The sun texture (camera rays and specular reflections)
 
 Sun Sun_new(__global const int* data) {
     Sun sun;
@@ -27,6 +35,9 @@ Sun Sun_new(__global const int* data) {
     sun.intensity = as_float(data[3]);
     sun.luminosity = as_float(data[6]);
     sun.color = colorFromArgb(data[7]);
+    sun.radius = as_float(data[8]);
+    sun.emittance = (float3) (as_float(data[9]), as_float(data[10]), as_float(data[11]));
+    sun.luminosityPdf = as_float(data[12]);
     
     float phi = as_float(data[4]);
     float theta = as_float(data[5]);
@@ -44,22 +55,20 @@ Sun Sun_new(__global const int* data) {
     return sun;
 }
 
-bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, MaterialSample* sample) {
+bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, int mode, MaterialSample* sample) {
     float3 direction = ray.direction;
 
-    if (!(self.flags & 1) || dot(direction, self.sw) < 0.5f) {
+    if (mode == SUN_NONE || !(self.flags & 1) || dot(direction, self.sw) < 0.5f) {
         return false;
     }
 
-    float radius = 0.03;
-
-    float width = radius * 4;
+    float width = self.radius * 4;
     float width2 = width * 2;
     float a = M_PI_2_F - acos(dot(direction, self.su)) + width;
     if (a >= 0 && a < width2) {
         float b = M_PI_2_F - acos(dot(direction, self.sv)) + width;
         if (b >= 0 && b < width2) {
-            if (ray.flags & RAY_INDIRECT) {
+            if (mode == SUN_DIFFUSE) {
                 float4 color = self.color;
                 color *= self.luminosity;
                 sample->color += color;
@@ -76,29 +85,16 @@ bool Sun_intersect(Sun self, image2d_array_t atlas, Ray ray, MaterialSample* sam
     return false;
 }
 
-bool Sun_sampleDirection(Sun self, Ray* ray, Random random) {
-    if (!(self.flags & 1)) {
-        return false;
-    }
-
-    float radius_cos = cos(0.03f);
-
+// Random direction towards the sun disk, see Sun.getRandomSunDirection.
+float3 Sun_sampleDirection(Sun self, Random random) {
     float x1 = Random_nextFloat(random);
     float x2 = Random_nextFloat(random);
 
-    float cos_a = 1 - x1 + x1 * radius_cos;
-    float sin_a = sqrt(1 - cos_a * cos_a);
+    float cos_a = 1 - x1 + x1 * cos(self.radius);
+    float sin_a = sqrt(fmax(0.0f, 1 - cos_a * cos_a));
     float phi = 2 * M_PI_F * x2;
 
-    float3 u = self.su * (cos(phi) * sin_a);
-    float3 v = self.sv * (sin(phi) * sin_a);
-    float3 w = self.sw * cos_a;
-
-    ray->direction = u * v;
-    ray->direction += w;
-    ray->direction = normalize(ray->direction);
-
-    return true;
+    return normalize(self.su * (cos(phi) * sin_a) + self.sv * (sin(phi) * sin_a) + self.sw * cos_a);
 }
 
 const sampler_t skySampler = CLK_NORMALIZED_COORDS_TRUE  | CLK_ADDRESS_MIRRORED_REPEAT | CLK_FILTER_LINEAR;

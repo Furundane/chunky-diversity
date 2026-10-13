@@ -1,6 +1,6 @@
 package dev.thatredox.chunkynative.opencl.context;
 
-import jdk.jpackage.internal.Log;
+import se.llbit.log.Log;
 import org.jocl.*;
 
 import java.util.Arrays;
@@ -122,7 +122,7 @@ public class ClContext {
                     break;
             }
             CL.setExceptionsEnabled(true);
-            se.llbit.log.Log.error("Failed to build CL program: " + error);
+            Log.error("Failed to build CL program: " + error);
 
             long[] size = new long[1];
             clGetProgramBuildInfo(kernelProgram, deviceArray[0], CL.CL_PROGRAM_BUILD_LOG, 0, null, size);

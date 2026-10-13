@@ -31,6 +31,8 @@ public class ClSceneLoader extends AbstractSceneLoader {
 
     protected ClIntBuffer octreeData = null;
     protected ClIntBuffer octreeDepth = null;
+    protected ClIntBuffer waterOctreeData = null;
+    protected ClIntBuffer waterOctreeDepth = null;
     private final ClContext context;
 
     public ClSceneLoader(ClContext context) {
@@ -64,14 +66,25 @@ public class ClSceneLoader extends AbstractSceneLoader {
     protected boolean loadOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
         if (octreeData != null) octreeData.close();
         if (octreeDepth != null) octreeDepth.close();
+        octreeData = new ClIntBuffer(mapOctree(octree, blockMapping), context);
+        octreeDepth = new ClIntBuffer(depth, context);
+        return true;
+    }
 
-        int[] mappedOctree = Arrays.stream(octree)
+    @Override
+    protected boolean loadWaterOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
+        if (waterOctreeData != null) waterOctreeData.close();
+        if (waterOctreeDepth != null) waterOctreeDepth.close();
+        waterOctreeData = new ClIntBuffer(mapOctree(octree, blockMapping), context);
+        waterOctreeDepth = new ClIntBuffer(depth, context);
+        return true;
+    }
+
+    /** Replace Chunky block palette ids in the leaves with pointers into the packed block palette. */
+    private static int[] mapOctree(int[] octree, int[] blockMapping) {
+        return Arrays.stream(octree)
                 .map(i -> i > 0 || -i >= blockMapping.length ? i : -blockMapping[-i])
                 .toArray();
-        octreeData = new ClIntBuffer(mappedOctree, context);
-        octreeDepth = new ClIntBuffer(depth, context);
-
-        return true;
     }
 
     @Override
@@ -112,6 +125,16 @@ public class ClSceneLoader extends AbstractSceneLoader {
     public ClIntBuffer getOctreeDepth() {
         assert octreeDepth != null;
         return octreeDepth;
+    }
+
+    public ClIntBuffer getWaterOctreeData() {
+        assert waterOctreeData != null;
+        return waterOctreeData;
+    }
+
+    public ClIntBuffer getWaterOctreeDepth() {
+        assert waterOctreeDepth != null;
+        return waterOctreeDepth;
     }
 
     public ClTextureLoader getTexturePalette() {

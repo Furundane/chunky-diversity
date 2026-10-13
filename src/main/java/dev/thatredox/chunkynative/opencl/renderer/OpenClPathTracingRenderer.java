@@ -77,23 +77,30 @@ public class OpenClPathTracingRenderer implements Renderer {
                 scene.canvasConfig.getCropX(), scene.canvasConfig.getCropY()
         }, context.context);
         ClIntBuffer clRayDepth = new ClIntBuffer(scene.getRayDepth(), context.context);
+        ClWater water = new ClWater(scene, context.context);
 
         try (ClCamera ignored1 = camera;
              ClMemory ignored2 = buffer;
              ClMemory ignored3 = randomSeed;
              ClMemory ignored4 = bufferSpp;
              ClIntBuffer ignored5 = clCanvasConfig;
-             ClIntBuffer ignored6 = clRayDepth) {
+             ClIntBuffer ignored6 = clRayDepth;
+             ClWater ignored7 = water) {
 
             // Generate initial camera rays
             camera.generate(renderLock, true);
 
+            // bufferSppReal: GPU passes accumulated in the device buffer but not yet merged into the sample buffer.
+            // logicalSpp: samples merged (or being merged) into the sample buffer. scene.spp is only advanced once a
+            // merge has finished, so the render manager never sees samples that are not in the sample buffer yet.
             int bufferSppReal = 0;
             int logicalSpp = scene.spp;
             final int[] sceneSpp = {scene.spp};
             long lastCallback = 0;
+            long lastMerge = System.currentTimeMillis();
 
-            Random rand = new Random(0);
+            // Seed from the current spp so a resumed render does not repeat the samples it already has.
+            Random rand = new Random(scene.spp);
 
             ForkJoinTask<?> cameraGenTask = Chunky.getCommonThreads().submit(() -> 0);
             ForkJoinTask<?> bufferMergeTask = Chunky.getCommonThreads().submit(() -> 0);
@@ -115,6 +122,8 @@ public class OpenClPathTracingRenderer implements Renderer {
 
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getOctreeDepth().get()));
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getOctreeData().get()));
+                clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getWaterOctreeDepth().get()));
+                clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getWaterOctreeData().get()));
 
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getBlockPalette().get()));
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getQuadPalette().get()));
@@ -130,6 +139,7 @@ public class OpenClPathTracingRenderer implements Renderer {
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyTexture.get()));
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSky().skyIntensity.get()));
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(sceneLoader.getSun().get()));
+                clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(water.settings.get()));
 
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(randomSeed.get()));
                 clSetKernelArg(kernel, argIndex++, Sizeof.cl_mem, Pointer.to(bufferSpp.get()));
@@ -140,47 +150,63 @@ public class OpenClPathTracingRenderer implements Renderer {
                         new long[]{passBuffer.length / 3}, null, 0, null,
                         renderEvent[0]);
                 clWaitForEvents(1, renderEvent);
+                clReleaseEvent(renderEvent[0]);
                 renderLock.unlock();
                 bufferSppReal += 1;
-                scene.spp += 1;
 
                 if (camera.needGenerate && cameraGenTask.isDone()) {
                     cameraGenTask = Chunky.getCommonThreads().submit(() -> camera.generate(renderLock, true));
                 }
 
-                boolean saveEvent = isSaveEvent(manager.getSnapshotControl(), scene, logicalSpp + bufferSppReal);
-                if (bufferMergeTask.isDone() || saveEvent) {
-                    if (!scene.shouldFinalizeBuffer() && !saveEvent) {
-                        long time = System.currentTimeMillis();
+                int reachedSpp = logicalSpp + bufferSppReal;
+                boolean lastPass = reachedSpp >= scene.getTargetSpp();
+                boolean forceMerge = lastPass || isSaveEvent(manager.getSnapshotControl(), scene, reachedSpp);
+                long time = System.currentTimeMillis();
+
+                if (!forceMerge) {
+                    if (!bufferMergeTask.isDone()) {
+                        continue;
+                    }
+                    // Merging and post processing the full frame costs CPU time on every core, so limit it to a
+                    // few times per second while the canvas is visible, and once per second otherwise.
+                    long mergeInterval = scene.shouldFinalizeBuffer() ? 250 : 1000;
+                    if (bufferSppReal < 1024 && time - lastMerge < mergeInterval) {
+                        // Not merging yet; still give the render manager a chance to pause or reset.
                         if (time - lastCallback > 100 && !manager.shouldFinalize()) {
                             lastCallback = time;
                             if (postRender.getAsBoolean()) break;
                         }
-                        if (bufferSppReal < 1024)
-                            continue;
+                        continue;
                     }
+                }
 
+                // Merge the accumulated GPU passes into the sample buffer.
+                bufferMergeTask.join();
+                clEnqueueReadBuffer(context.context.queue, buffer.get(), CL_TRUE, 0,
+                        (long) Sizeof.cl_float * passBuffer.length, Pointer.to(passBuffer),
+                        0, null, null);
+                int sampSpp = sceneSpp[0];
+                int passSpp = bufferSppReal;
+                double sinv = 1.0 / (sampSpp + passSpp);
+                bufferSppReal = 0;
+                lastMerge = time;
+
+                bufferMergeTask = Chunky.getCommonThreads().submit(() -> {
+                    Arrays.parallelSetAll(sampleBuffer, i -> (sampleBuffer[i] * sampSpp + passBuffer[i] * passSpp) * sinv);
+                    sceneSpp[0] += passSpp;
+                    scene.spp = sceneSpp[0];
+                    scene.postProcessFrame(TaskTracker.Task.NONE);
+                    manager.redrawScreen();
+                });
+                logicalSpp += passSpp;
+
+                if (forceMerge) {
+                    // Snapshots and the end of the render need the merged samples.
                     bufferMergeTask.join();
+                }
+                if (forceMerge || time - lastCallback > 100) {
+                    lastCallback = time;
                     if (postRender.getAsBoolean()) break;
-                    clEnqueueReadBuffer(context.context.queue, buffer.get(), CL_TRUE, 0,
-                            (long) Sizeof.cl_float * passBuffer.length, Pointer.to(passBuffer),
-                            0, null, null);
-                    int sampSpp = sceneSpp[0];
-                    int passSpp = bufferSppReal;
-                    double sinv = 1.0 / (sampSpp + passSpp);
-                    bufferSppReal = 0;
-
-                    bufferMergeTask = Chunky.getCommonThreads().submit(() -> {
-                        Arrays.parallelSetAll(sampleBuffer, i -> (sampleBuffer[i] * sampSpp + passBuffer[i] * passSpp) * sinv);
-                        sceneSpp[0] += passSpp;
-                        scene.postProcessFrame(TaskTracker.Task.NONE);
-                        manager.redrawScreen();
-                    });
-                    logicalSpp += passSpp;
-                    if (saveEvent) {
-                        bufferMergeTask.join();
-                        if (postRender.getAsBoolean()) break;
-                    }
                 }
             }
 
