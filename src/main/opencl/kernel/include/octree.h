@@ -204,7 +204,10 @@ bool Octree_exitWater(Octree self, image2d_array_t atlas, BlockPalette palette, 
         }
 
         if (hitDistance >= 0) {
-            if (hitDistance >= record->distance) {
+            // Leaving the water into a solid block lands exactly on that block's surface, which the world
+            // octree already found; floating point decides which is closer. Like Scene.intersect in Chunky,
+            // only take the water exit if it is clearly closer, so the solid block wins ties.
+            if (hitDistance >= record->distance - OFFSET) {
                 return false;
             }
             float3 hit = ray.origin + ray.direction * hitDistance;
