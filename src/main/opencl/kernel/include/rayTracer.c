@@ -155,6 +155,11 @@ __kernel void render(
 
             if (record.flags & HIT_WATER) {
                 float3 hitPoint = ray.origin + ray.direction * record.distance;
+                // Waves change the shading normal of water surfaces facing up or down, like PathTracer.
+                // Water_scatter turns the normal toward the incoming ray.
+                if (scene.water.waveMode != WAVES_STILL && record.normal.y != 0) {
+                    record.normal = Water_waveNormal(scene.water, hitPoint);
+                }
                 Ray incoming = ray;
                 bool diffuse = Water_scatter(scene.water, record, sample, &ray, &throughput, random);
                 bool transmitted = ((ray.flags ^ incoming.flags) & RAY_WATER) != 0;

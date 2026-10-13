@@ -7,6 +7,7 @@
 #include "compat.h"
 #include "rt.h"
 #include "constants.h"
+#include "noise.h"
 #include "material.h"
 #include "random.h"
 
@@ -24,7 +25,20 @@ typedef struct {
     float transmissivityCap;
     bool fancierTranslucency;
     float3 textureColor;  // Average color of the water texture, used instead of the texture (like Chunky)
+    // Waves (WaterShader in Chunky)
+    int waveMode;
+    int waveIterations;
+    float waveFrequency;
+    float waveAmplitude;
+    float waveSpeed;
+    float animationTime;
+    int normalMapWidth;
+    __global const float* normalMap;
 } WaterSettings;
+
+#define WAVES_STILL   0
+#define WAVES_SIMPLEX 1
+#define WAVES_TILED   2
 
 WaterSettings WaterSettings_new(__global const float* data) {
     WaterSettings ws;
@@ -36,6 +50,14 @@ WaterSettings WaterSettings_new(__global const float* data) {
     ws.transmissivityCap = data[7];
     ws.fancierTranslucency = data[8] != 0;
     ws.textureColor = vload3(0, data + 11);
+    ws.waveMode = (int) data[14];
+    ws.waveIterations = (int) data[15];
+    ws.waveFrequency = data[16];
+    ws.waveAmplitude = data[17];
+    ws.waveSpeed = data[18];
+    ws.animationTime = data[19];
+    ws.normalMapWidth = (int) data[20];
+    ws.normalMap = data + 21;
     return ws;
 }
 
@@ -155,6 +177,47 @@ bool Water_enter(WaterCorners c, float3 o, float3 d, float maxT, __private float
     _Water_side(o, d, 2, 1, c.c0, c.c1, make_float3(0, 0, 1), &best, normal, uv, &hit);   // south
     *t = best;
     return hit;
+}
+
+// Normal of the water surface at a point with waves, facing up (WaterShader.doWaterShading in Chunky).
+float3 Water_waveNormal(WaterSettings ws, float3 p) {
+    if (ws.waveMode == WAVES_SIMPLEX) {
+        // SimplexWaterShader: fractal simplex noise; the slopes along x and z give the normal.
+        float frequency = ws.waveFrequency;
+        float amplitude = ws.waveAmplitude;
+        float ddx = 0;
+        float ddz = 0;
+        for (int i = 0; i < ws.waveIterations; i++) {
+            float nx, nz;
+            Simplex_noise3(p.x * frequency, p.z * frequency, ws.animationTime * ws.waveSpeed, &nx, &nz);
+            float ddxNext = ddx - amplitude * nx;
+            float ddzNext = ddz - amplitude * nz;
+            if (isnan(ddxNext + ddzNext)) {
+                break;
+            }
+            ddx = ddxNext;
+            ddz = ddzNext;
+            frequency *= 2;
+            amplitude *= 0.5f;
+        }
+        return normalize(make_float3(-ddx, 1, -ddz));
+    } else {
+        // LegacyWaterShader (WaterModel.doWaterDisplacement): the normal map at two scales.
+        int w = ws.normalMapWidth;
+        const float epsilon = 0.00000005f;
+        float x = p.x / 16 - floor(p.x / 16);
+        float z = p.z / 16 - floor(p.z / 16);
+        int u = clamp((int) (x * w - epsilon), 0, w - 1);
+        int v = clamp((int) ((1 - z) * w - epsilon), 0, w - 1);
+        float3 n = make_float3(ws.normalMap[(u * w + v) * 2], 0.15f, ws.normalMap[(u * w + v) * 2 + 1]);
+        x = p.x / 2 - floor(p.x / 2);
+        z = p.z / 2 - floor(p.z / 2);
+        u = clamp((int) (x * w - epsilon), 0, w - 1);
+        v = clamp((int) ((1 - z) * w - epsilon), 0, w - 1);
+        n.x += ws.normalMap[(u * w + v) * 2] / 2;
+        n.z += ws.normalMap[(u * w + v) * 2 + 1] / 2;
+        return normalize(n);
+    }
 }
 
 // Water surface color. Chunky shades water with the average color of the water texture

@@ -20,6 +20,7 @@ using namespace metal;
 #define __global device
 #define __private thread
 #define __kernel kernel
+#define __constant constant
 
 // Images. The texture read is written per backend where it occurs (textureAtlas.h).
 #define image2d_array_t texture2d_array<float>
