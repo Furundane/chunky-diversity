@@ -112,8 +112,11 @@ public class FeatureHarness {
         s -> s.setSunSamplingStrategy(SunSamplingStrategy.FAST));
     toggle("emitter_intensity", s -> { night(s); s.setEmitterIntensity(1); },
         s -> { night(s); s.setEmitterIntensity(10); });
+    // At night with emitters disabled there is no light at all, so a black image is the expected result.
+    allowBlack = true;
     toggle("emitters_enabled", s -> { night(s); s.setEmittersEnabled(false); },
         s -> { night(s); s.setEmittersEnabled(true); });
+    allowBlack = false;
     toggle("water_visibility", s -> s.setWaterVisibility(9), s -> s.setWaterVisibility(1), true, true);
     toggle("water_opacity", s -> s.setWaterOpacity(0.1), s -> s.setWaterOpacity(0.8));
     toggle("water_opacity_no_sun_sampling",
@@ -152,7 +155,10 @@ public class FeatureHarness {
     s.sky().setColor(new Vector3(0, 0, 0));
     s.sun().setIntensity(0);
     s.sun().setDrawTexture(false);
-    s.setSunSamplingStrategy(SunSamplingStrategy.OFF);
+    // Not OFF: with OFF, Chunky still lights diffuse surfaces with the sun texture at intensity 0
+    // (Sun.intersectDiffuse ignores the intensity), which would hide the emitters. The sun sampling
+    // modes have their own cases.
+    s.setSunSamplingStrategy(SunSamplingStrategy.FAST);
     s.setEmittersEnabled(true);
     s.setEmitterSamplingStrategy(EmitterSamplingStrategy.NONE);
   }
@@ -242,6 +248,7 @@ public class FeatureHarness {
   }
 
   static boolean finalize = true;
+  static boolean allowBlack = false;
 
   // CPU reference renders don't change while the GPU plugin is being worked on, so they are cached on disk.
   // The key includes the harness source and the Chunky core jar, so changing either re-renders them.
@@ -343,7 +350,7 @@ public class FeatureHarness {
       if (first.length() > 200) first = first.substring(0, 200);
       r.error = (r.error == null ? "" : r.error + " | ") + "log " + first;
     }
-    if (r.samples != null && allZero(r.samples) && r.error == null) r.error = "all-black output";
+    if (r.samples != null && allZero(r.samples) && r.error == null && !allowBlack) r.error = "all-black output";
     return r;
   }
 
