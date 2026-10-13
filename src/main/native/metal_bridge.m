@@ -282,6 +282,25 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_dispatch(JNI
             return 0;
         }
 
+        // Diagnostics: with MTL_CAPTURE_ENABLED=1 and CHUNKYMETAL_CAPTURE=<file.gputrace>, the
+        // CHUNKYMETAL_CAPTURE_DISPATCH-th dispatch (default 10) is captured for Xcode.
+        static int dispatchCount = 0;
+        bool capture = false;
+        const char *capturePath = getenv("CHUNKYMETAL_CAPTURE");
+        if (capturePath != NULL) {
+            const char *which = getenv("CHUNKYMETAL_CAPTURE_DISPATCH");
+            if (++dispatchCount == (which != NULL ? atoi(which) : 10)) {
+                MTLCaptureDescriptor *descriptor = [MTLCaptureDescriptor new];
+                descriptor.captureObject = context.queue;
+                descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+                descriptor.outputURL = [NSURL fileURLWithPath:@(capturePath)];
+                NSError *captureError = nil;
+                capture = [[MTLCaptureManager sharedCaptureManager] startCaptureWithDescriptor:descriptor error:&captureError];
+                fprintf(stderr, "Metal capture to %s: %s\n", capturePath,
+                        capture ? "started" : captureError.localizedDescription.UTF8String);
+            }
+        }
+
         id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
         [encoder setComputePipelineState:pipeline];
@@ -320,6 +339,10 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_dispatch(JNI
         [encoder endEncoding];
         [commandBuffer commit];
         [commandBuffer waitUntilCompleted];
+        if (capture) {
+            [[MTLCaptureManager sharedCaptureManager] stopCapture];
+            fprintf(stderr, "Metal capture saved\n");
+        }
 
         if (commandBuffer.status == MTLCommandBufferStatusError) {
             throwRuntime(env, [@"Kernel failed: " stringByAppendingString:commandBuffer.error.localizedDescription]);
