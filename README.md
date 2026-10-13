@@ -1,55 +1,62 @@
-# chunky-diversity (personal fork of ChunkyCL)
+# chunky-diversity
 
-> **About this fork:** I made these changes for my own renders. If they look useful to you, feel free to use them too :)
-> The work was done with the help of Claude (an AI assistant) and checked by rendering the same scenes with
-> Chunky's CPU path tracer and comparing the results. Based on upstream commit `d5621bc`.
->
-> The longer-term idea is one GPU kernel for several backends: **OpenCL** and **Metal** work now, CUDA may follow.
+Chunky's path tracer on the GPU. One kernel source runs on **OpenCL** (Windows, Linux, macOS) and **Metal**
+(macOS); the goal is the same image as Chunky's CPU renderer, faster. This is a personal fork of
+[ChunkyCL](https://github.com/chunky-dev/chunky-opencl), made with the help of Claude (an AI assistant).
 
-### What's changed
+## Supported Chunky features
 
-- **Metal renderer on macOS.** A second renderer, `ChunkyCL (Metal)`, runs the same kernel source as the
-  OpenCL renderer, compiled as Metal Shading Language (see `src/main/opencl/kernel/include/compat.h`).
-  On an M4 Pro it gives the same results as OpenCL in all harness tests and is about 1.28x faster than
-  Apple's OpenCL (26 ms instead of 33 ms per 1024x1024 pass on my test scene).
-- **Runs on Apple's OpenCL.** Context creation, program build and the tonemap kernel failed or crashed
-  on macOS; fixed.
-- **Texture atlas fix.** The kernel read the atlas layer with the wrong mask, so scenes whose textures
-  fill more than one atlas layer read some textures from the wrong layer.
+"Checked" means the harness in `harness/` renders it on the CPU and the GPU and the results match, or the
+setting changes the GPU image like it changes the CPU image.
 
-- **Headless renders no longer come out black.** The render loop counted GPU passes as samples before they
-  were merged into the sample buffer, so a `chunky -render` with fewer than 1024 spp could finish with an
-  empty image. `scene.spp` now only advances after a merge, and the last pass is always merged.
-- **Water is rendered.** The water octree is now uploaded to the GPU, with partial water surfaces, Fresnel
-  reflection and refraction (IOR 1.333), water fog (visibility), water opacity and custom water color,
-  following Chunky's `PathTracer`.
-- **Translucent blocks are see-through.** Stained glass and stained glass panes used to render as solid
-  colored walls because every pixel of their texture is partially transparent. Translucency, Fresnel
-  reflection and refraction now follow the CPU renderer (including fancier translucency and the
-  transmissivity cap).
-- **Large merged areas of non-full blocks** (e.g. lake surfaces) no longer get holes.
-- **Sun sampling (next event estimation).** With the default "Fast" sun sampling strategy, diffuse
-  surfaces now sample the sun directly with a shadow ray (through glass and water), like the CPU renderer.
-  On my glass building scene this reaches the same noise level about 2-2.7x faster.
-- **Russian roulette.** Paths that carry little light end early (unbiased). About 1.7x faster to the same
-  noise level on the same scene; the mean brightness is unchanged (checked against a 4000 spp reference).
-- **Less CPU work while rendering:** buffer merges and post processing run at most 4 times per second while
-  the canvas is visible (about 1.5x more spp/s at 1080p in my test).
-- **JOCL updated to 2.0.6**, which includes an arm64 (Apple Silicon) macOS library.
-- **Builds with current tooling:** Gradle 8.10, Java 17. Build against a local Chunky checkout with
-  `./gradlew jar -PchunkyDir=../chunky` (the published `2.5.0-SNAPSHOT` is from March 2024).
-- Small fixes: a stray `jdk.jpackage.internal.Log` import, OpenCL events that were never released,
-  resumed renders repeating the same random samples.
+| Chunky feature | GPU | Checked |
+|---|---|---|
+| Blocks and block models | Yes | Yes |
+| Translucent blocks (glass, stained glass, panes), fancier translucency, transmissivity cap | Yes | Yes |
+| Water: surfaces, refraction, opacity, visibility, custom color | Yes | Yes |
+| Water shading: still, simplex, tiled normal map | Yes | Yes |
+| Sky: sky light, apparent sky light, exposure, HDR skies | Yes | Yes |
+| Sky modes (all are taken from Chunky's own sky) | Yes | Simulated and solid color |
+| Sun: intensity, color, draw sun | Yes | Yes |
+| Sun sampling: Off, Fast | Yes | Yes |
+| Sun sampling: High quality | Yes | No |
+| Sun sampling: Importance | Behaves like Off | |
+| Emitters: on/off, intensity | Yes | Yes |
+| Emitter sampling (One, All) | No | |
+| Fog: uniform, layered | Yes | Yes |
+| Clouds, with cloud shadows | Yes | Yes |
+| Projections: pinhole, fisheye, panoramic, parallel | Yes | Yes |
+| Other projections | Yes (rays from Chunky) | No |
+| Depth of field | Yes | Pinhole and fisheye |
+| Ray depth, target SPP, headless rendering (`chunky -render`) | Yes | Yes |
+| Entities | Yes | No |
+| Biome colors (grass, leaves, water) | No (fixed colors) | |
+| Subsurface scattering, animated textures | No | |
+| Very large worlds (NODE / BIG_PACKED octree) | No | |
 
-| Stained glass: CPU / GPU before / GPU after | Water: CPU (left) vs GPU (right), without / with water |
-|---|---|
-| ![stained glass](docs/images/stained-glass-cpu-before-after.png) | ![water](docs/images/water-cpu-vs-gpu.png) |
+The previews show the scene without fog and waves.
 
-### Still different from the CPU renderer
+| Backend | Renderer | Preview |
+|---|---|---|
+| OpenCL | `ChunkyClRenderer` | `ChunkyClPreviewRenderer` |
+| Metal (macOS) | `ChunkyMetalRenderer` | `ChunkyMetalPreviewRenderer` |
 
-No fog, no water wave shading, emitter intensity is fixed (emitters look brighter), HDR skies above 1.0 are
-clipped, the "Importance" sun sampling strategy behaves like "Off", and large worlds that Chunky stores in the
-NODE octree format are not supported.
+On macOS, use the Metal renderer **and** the Metal preview; mixing them uploads the scene twice.
+
+## Tested on
+
+| System | GPU | Backends | Tests |
+|---|---|---|---|
+| macOS 26.2 | Apple M4 Pro, 24 GB | Metal, Apple OpenCL | Harness (43 cases, same results on both), real worlds in the Chunky GUI |
+| Windows | NVIDIA RTX 4060 | OpenCL | Harness, with an earlier version (before 0.4.0) |
+
+Built and tested against Chunky commit [`527cb4a`](https://github.com/chunky-dev/chunky/commit/527cb4a)
+(2.5.0 snapshot). On the M4 Pro, a 1024 x 1024 pass of a test scene at ray depth 20 takes about 27 ms on
+Metal and 33 ms on Apple's OpenCL.
+
+| Water: CPU (left) vs GPU (right), without / with water |
+|---|
+| ![water](docs/images/water-cpu-vs-gpu.png) |
 
 ---
 
@@ -64,7 +71,7 @@ Download the `.jar` from the [latest release of this fork](https://github.com/Fu
 
 ![image](https://user-images.githubusercontent.com/42661490/116319916-28ef2580-a76c-11eb-9f93-86d444a349fd.png)
 
-Select `ChunkyClRenderer` (OpenCL) or, on macOS, `ChunkyMetalRenderer` as your renderer for the scene in the `Advanced` tab.
+In the `Advanced` tab, select `ChunkyClRenderer` (OpenCL) or, on macOS, `ChunkyMetalRenderer` as the renderer, and the matching preview renderer (`ChunkyClPreviewRenderer` or `ChunkyMetalPreviewRenderer`).
 
 ![image](https://user-images.githubusercontent.com/42661490/122492084-fc040580-cf99-11eb-9b08-b166dc25db41.png)
 

@@ -2,7 +2,7 @@
   "name": "Chunky Diversity",
   "author": "ThatRedox, paradigm",
   "main": "dev.thatredox.chunkynative.opencl.ChunkyCl",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "targetVersion": "2.5.0",
   "description": "GPU rendering for Chunky with OpenCL and Metal. Fork of ChunkyCL."
 }
