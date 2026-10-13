@@ -47,6 +47,10 @@ rootProject {
         p.tasks.register('runChunky', JavaExec) { t ->
             common(t, 'dev.thatredox.chunkynative.opencl.ChunkyCl')
         }
+        p.tasks.register('runOctreeInfo', JavaExec) { t ->
+            common(t, 'harness.OctreeInfo')
+            t.args((p.findProperty('octreeArgs') ?: '').toString().split(';'))
+        }
         p.tasks.register('runClProbe', JavaExec) { t ->
             common(t, 'harness.ClProbe')
         }
