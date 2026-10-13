@@ -25,6 +25,13 @@ public class ClIntBuffer implements AutoCloseable {
                 (long) Sizeof.cl_uint * length, Pointer.to(buffer), null));
     }
 
+    /** An uninitialized buffer of {@code length} ints (at least one), to fill with {@link #set(int[], int, long)}. */
+    public ClIntBuffer(long length, ClContext context) {
+        this.context = context;
+        this.buffer = new ClMemory(clCreateBuffer(context.context, CL_MEM_READ_ONLY,
+                (long) Sizeof.cl_uint * Math.max(length, 1), null, null));
+    }
+
     public ClIntBuffer(int[] buffer, ClContext context) {
         this(buffer, buffer.length, context);
     }
@@ -48,6 +55,13 @@ public class ClIntBuffer implements AutoCloseable {
     public void set(int[] values, int offset) {
         clEnqueueWriteBuffer(context.queue, this.get(), CL_TRUE, (long) Sizeof.cl_uint * offset,
                 (long) Sizeof.cl_uint * values.length, Pointer.to(values),
+                0, null, null);
+    }
+
+    /** Writes the first {@code count} values to the buffer starting at int {@code offset}. */
+    public void set(int[] values, int count, long offset) {
+        clEnqueueWriteBuffer(context.queue, this.get(), CL_TRUE, (long) Sizeof.cl_uint * offset,
+                (long) Sizeof.cl_uint * count, Pointer.to(values),
                 0, null, null);
     }
 

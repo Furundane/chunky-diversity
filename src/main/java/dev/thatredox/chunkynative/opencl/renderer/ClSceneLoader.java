@@ -20,7 +20,6 @@ import dev.thatredox.chunkynative.util.FunctionCache;
 import se.llbit.chunky.renderer.ResetReason;
 import se.llbit.chunky.renderer.scene.Scene;
 
-import java.util.Arrays;
 
 public class ClSceneLoader extends AbstractSceneLoader {
     protected final FunctionCache<int[], ClIntBuffer> clWorldBvh;
@@ -63,28 +62,32 @@ public class ClSceneLoader extends AbstractSceneLoader {
     }
 
     @Override
-    protected boolean loadOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
+    protected boolean loadOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
         if (octreeData != null) octreeData.close();
         if (octreeDepth != null) octreeDepth.close();
-        octreeData = new ClIntBuffer(mapOctree(octree, blockMapping), context);
+        octreeData = uploadOctree(octree, length, blockMapping);
         octreeDepth = new ClIntBuffer(depth, context);
         return true;
     }
 
     @Override
-    protected boolean loadWaterOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
+    protected boolean loadWaterOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
         if (waterOctreeData != null) waterOctreeData.close();
         if (waterOctreeDepth != null) waterOctreeDepth.close();
-        waterOctreeData = new ClIntBuffer(mapOctree(octree, blockMapping), context);
+        waterOctreeData = uploadOctree(octree, length, blockMapping);
         waterOctreeDepth = new ClIntBuffer(depth, context);
         return true;
     }
 
-    /** Replace Chunky block palette ids in the leaves with pointers into the packed block palette. */
-    private static int[] mapOctree(int[] octree, int[] blockMapping) {
-        return Arrays.stream(octree)
-                .map(i -> i > 0 || -i >= blockMapping.length ? i : -blockMapping[-i])
-                .toArray();
+    private ClIntBuffer uploadOctree(int[] octree, int length, int[] blockMapping) {
+        ClIntBuffer buffer = new ClIntBuffer((long) length, context);
+        int[] chunk = new int[Math.max(1, Math.min(length, OCTREE_UPLOAD_CHUNK))];
+        for (int start = 0; start < length; start += chunk.length) {
+            int count = Math.min(chunk.length, length - start);
+            mapOctree(octree, start, chunk, count, blockMapping);
+            buffer.set(chunk, count, start);
+        }
+        return buffer;
     }
 
     @Override

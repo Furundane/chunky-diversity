@@ -21,6 +21,7 @@ import se.llbit.math.bvh.BinaryBVH;
 import se.llbit.math.primitive.TexturedTriangle;
 
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
 import java.util.Arrays;
 
 public abstract class AbstractSceneLoader {
@@ -157,9 +158,11 @@ public abstract class AbstractSceneLoader {
             assert blockMapping != null;
             prevOctree = new WeakReference<>(impl, null);
             prevWaterOctree = new WeakReference<>(waterImpl, null);
-            if (!loadOctree(((PackedOctree) impl).treeData, impl.getDepth(), blockMapping, blockPalette))
+            PackedOctree octree = (PackedOctree) impl;
+            PackedOctree waterOctree = (PackedOctree) waterImpl;
+            if (!loadOctree(octree.treeData, usedLength(octree), impl.getDepth(), blockMapping, blockPalette))
                 return false;
-            if (!loadWaterOctree(((PackedOctree) waterImpl).treeData, waterImpl.getDepth(), blockMapping, blockPalette))
+            if (!loadWaterOctree(waterOctree.treeData, usedLength(waterOctree), waterImpl.getDepth(), blockMapping, blockPalette))
                 return false;
         }
 
@@ -186,9 +189,38 @@ public abstract class AbstractSceneLoader {
         return out;
     }
 
-    protected abstract boolean loadOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
+    /**
+     * Upload an octree. Only the first {@code length} ints of {@code octree} are used: the array grows with
+     * spare capacity (up to 1.5x).
+     */
+    protected abstract boolean loadOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
 
-    protected abstract boolean loadWaterOctree(int[] octree, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
+    protected abstract boolean loadWaterOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette);
+
+    /** Ints of the octree's array in use (PackedOctree.size), or the whole array if that can't be read. */
+    private static int usedLength(PackedOctree octree) {
+        try {
+            Field size = PackedOctree.class.getDeclaredField("size");
+            size.setAccessible(true);
+            return Math.min(size.getInt(octree), octree.treeData.length);
+        } catch (ReflectiveOperationException e) {
+            return octree.treeData.length;
+        }
+    }
+
+    /** Ints of octree converted per upload step, so the converted octree is never copied whole in memory. */
+    protected static final int OCTREE_UPLOAD_CHUNK = 1 << 22;
+
+    /**
+     * Convert {@code count} octree ints starting at {@code from} into {@code out}: Chunky block palette ids in
+     * the leaves are replaced with pointers into the packed block palette.
+     */
+    protected static void mapOctree(int[] octree, int from, int[] out, int count, int[] blockMapping) {
+        for (int i = 0; i < count; i++) {
+            int value = octree[from + i];
+            out[i] = value > 0 || -value >= blockMapping.length ? value : -blockMapping[-value];
+        }
+    }
 
     protected abstract AbstractTextureLoader createTextureLoader();
     protected abstract ResourcePalette<PackedBlock> createBlockPalette();

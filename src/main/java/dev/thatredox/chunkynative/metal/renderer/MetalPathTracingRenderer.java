@@ -92,7 +92,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             float[] rays = CameraData.generateRays(scene, true);
             renderLock.lock();
             try {
-                cameraSettings.contents().asFloatBuffer().put(rays);
+                cameraSettings.writeFloats(0, rays, 0, rays.length);
             } finally {
                 renderLock.unlock();
             }
@@ -100,8 +100,8 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
 
         @Override
         public void renderPass(int seed, int spp) {
-            randomSeed.contents().putInt(0, seed);
-            bufferSpp.contents().putInt(0, spp);
+            randomSeed.writeInt(0, seed);
+            bufferSpp.writeInt(0, spp);
 
             // Buffers and textures in the order the render kernel declares them (rayTracer.c).
             long[] buffers = {
@@ -143,7 +143,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
 
         @Override
         public void readBuffer(float[] passBuffer) {
-            buffer.contents().asFloatBuffer().get(passBuffer);
+            buffer.readFloats(passBuffer);
         }
 
         @Override

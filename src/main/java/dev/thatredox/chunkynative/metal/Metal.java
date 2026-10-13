@@ -2,8 +2,6 @@ package dev.thatredox.chunkynative.metal;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -61,16 +59,18 @@ public final class Metal {
     /** Allocates a zero-filled buffer in shared (CPU and GPU visible) memory. */
     public static native long newBuffer(long context, long bytes);
 
-    private static native ByteBuffer contents0(long buffer);
+    /** The largest buffer the device can allocate, in bytes. */
+    public static native long maxBufferLength(long context);
 
-    /**
-     * Direct view of a buffer's memory, in native byte order. No copy: on Apple silicon the CPU
-     * and GPU share memory. Valid until the buffer is released. Only touch it while no kernel
-     * using the buffer is running.
+    /*
+     * Copy between Java arrays and a buffer, at a byte offset into the buffer (which can be larger
+     * than 2 GB). Only call these while no kernel using the buffer is running.
      */
-    public static ByteBuffer contents(long buffer) {
-        return contents0(buffer).order(ByteOrder.nativeOrder());
-    }
+    public static native void writeInts(long buffer, long byteOffset, int[] data, int offset, int length);
+
+    public static native void writeFloats(long buffer, long byteOffset, float[] data, int offset, int length);
+
+    public static native void readFloats(long buffer, long byteOffset, float[] data, int offset, int length);
 
     /** Creates an RGBA8 (unsigned normalized) 2D texture array. */
     public static native long newTexture2DArray(long context, int width, int height, int layers);

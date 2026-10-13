@@ -108,9 +108,44 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_newBuffer(JN
     }
 }
 
-JNIEXPORT jobject JNICALL Java_dev_thatredox_chunkynative_metal_Metal_contents0(JNIEnv *env, jclass cls, jlong bufferHandle) {
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_maxBufferLength(JNIEnv *env, jclass cls, jlong contextHandle) {
+    CMContext *context = fromHandle(contextHandle);
+    return (jlong) context.device.maxBufferLength;
+}
+
+// Pointer to bytes [byteOffset, byteOffset + bytes) of a buffer, or NULL (with an exception) if out of range.
+static void *bufferRange(JNIEnv *env, jlong bufferHandle, jlong byteOffset, jlong bytes) {
     id<MTLBuffer> buffer = fromHandle(bufferHandle);
-    return (*env)->NewDirectByteBuffer(env, buffer.contents, (jlong) buffer.length);
+    if (byteOffset < 0 || bytes < 0 || (NSUInteger) (byteOffset + bytes) > buffer.length) {
+        throwRuntime(env, [NSString stringWithFormat:@"Range %lld + %lld is outside a %lu byte buffer",
+                (long long) byteOffset, (long long) bytes, (unsigned long) buffer.length]);
+        return NULL;
+    }
+    return (char *) buffer.contents + byteOffset;
+}
+
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_writeInts(JNIEnv *env, jclass cls, jlong bufferHandle,
+        jlong byteOffset, jintArray data, jint offset, jint length) {
+    void *target = bufferRange(env, bufferHandle, byteOffset, (jlong) length * 4);
+    if (target != NULL) {
+        (*env)->GetIntArrayRegion(env, data, offset, length, (jint *) target);
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_writeFloats(JNIEnv *env, jclass cls, jlong bufferHandle,
+        jlong byteOffset, jfloatArray data, jint offset, jint length) {
+    void *target = bufferRange(env, bufferHandle, byteOffset, (jlong) length * 4);
+    if (target != NULL) {
+        (*env)->GetFloatArrayRegion(env, data, offset, length, (jfloat *) target);
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_readFloats(JNIEnv *env, jclass cls, jlong bufferHandle,
+        jlong byteOffset, jfloatArray data, jint offset, jint length) {
+    void *source = bufferRange(env, bufferHandle, byteOffset, (jlong) length * 4);
+    if (source != NULL) {
+        (*env)->SetFloatArrayRegion(env, data, offset, length, (const jfloat *) source);
+    }
 }
 
 static jlong newTexture(JNIEnv *env, jlong contextHandle, MTLTextureType type, jint width, jint height, jint layers) {
