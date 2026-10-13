@@ -12,16 +12,16 @@ import se.llbit.chunky.renderer.scene.Scene;
 
 public class ClSky implements AutoCloseable {
     public final ClMemory skyTexture;
-    public final ClMemory skyIntensity;
+    public final ClMemory skyLight;
     private final ClContext context;
 
     public ClSky(Scene scene, ClContext context) {
         this.context = context;
         SkyData sky = new SkyData(scene);
 
-        this.skyIntensity = new ClMemory(clCreateBuffer(context.context,
-                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, Sizeof.cl_float,
-                Pointer.to(new float[] {sky.intensity}), null));
+        this.skyLight = new ClMemory(clCreateBuffer(context.context,
+                CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, (long) Sizeof.cl_float * sky.skyLight.length,
+                Pointer.to(sky.skyLight), null));
 
         cl_image_format fmt = new cl_image_format();
         fmt.image_channel_data_type = CL_UNORM_INT8;
@@ -39,6 +39,6 @@ public class ClSky implements AutoCloseable {
     @Override
     public void close() {
         skyTexture.close();
-        skyIntensity.close();
+        skyLight.close();
     }
 }

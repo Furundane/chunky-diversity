@@ -80,7 +80,7 @@ __kernel void render(
     __global const int* matPalette,
 
     image2d_t skyTexture,
-    __global const float* skyIntensity,
+    __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,
 
@@ -188,7 +188,9 @@ __kernel void render(
                 ray.flags |= RAY_INDIRECT;
             }
         } else {
-            intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, Scene_sunMode(scene, ray), &sample);
+            // Like Sky.getSkyColorInterpolated / getSkyColor in Chunky: camera rays see the apparent sky light.
+            float skyMultiplier = depth == 0 ? skyLight[1] : skyLight[0];
+            intersectSky(skyTexture, skyMultiplier, sun, textureAtlas, ray, Scene_sunMode(scene, ray), &sample);
             throughput *= sample.color.xyz;
             color += sample.emittance * throughput;
             break;
@@ -222,7 +224,7 @@ __kernel void preview(
     __global const int* matPalette,
 
     image2d_t skyTexture,
-    __global const float* skyIntensity,
+    __global const float* skyLight,  // [0] sky seen by reflected rays, [1] seen directly (apparent)
     __global const int* sunData,
     __global const float* waterSettings,
 
@@ -282,7 +284,7 @@ __kernel void preview(
             color = sample.color.xyz * shading;
         }
     } else {
-        intersectSky(skyTexture, *skyIntensity, sun, textureAtlas, ray, SUN_TEXTURE, &sample);
+        intersectSky(skyTexture, skyLight[1], sun, textureAtlas, ray, SUN_TEXTURE, &sample);
         color = sample.color.xyz;
     }
 

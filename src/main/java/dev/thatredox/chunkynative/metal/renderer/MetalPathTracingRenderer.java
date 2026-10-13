@@ -118,7 +118,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
 
                     sceneLoader.getMaterialPalette().handle,
 
-                    sceneLoader.getSkyIntensity().handle,
+                    sceneLoader.getSkyLight().handle,
                     sceneLoader.getSun().handle,
                     water.handle,
 

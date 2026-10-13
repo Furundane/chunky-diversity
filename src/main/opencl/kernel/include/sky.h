@@ -106,7 +106,7 @@ const sampler_t skySampler = CLK_NORMALIZED_COORDS_TRUE  | CLK_ADDRESS_MIRRORED_
 #define Sky_read(texture, uv) read_imagef((texture), skySampler, (uv))
 #endif
 
-void Sky_intersect(image2d_t skyTexture, float skyIntensity, Ray ray, __private MaterialSample* sample) {
+void Sky_intersect(image2d_t skyTexture, float skyMultiplier, Ray ray, __private MaterialSample* sample) {
     float3 direction = ray.direction;
 
     float theta = atan2(direction.z, direction.x);
@@ -114,7 +114,7 @@ void Sky_intersect(image2d_t skyTexture, float skyIntensity, Ray ray, __private 
     theta = fmod(fmod(theta, 1) + 1, 1);
     float phi = (asin(clamp(direction.y, -1.0f, 1.0f)) + M_PI_2_F) * M_1_PI_F;
 
-    sample->color = Sky_read(skyTexture, make_float2(theta, phi)) * skyIntensity;
+    sample->color = Sky_read(skyTexture, make_float2(theta, phi)) * skyMultiplier;
     sample->emittance = 1.0;
 }
 

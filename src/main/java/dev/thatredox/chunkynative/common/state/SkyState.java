@@ -21,6 +21,8 @@ public class SkyState {
     private final Matrix3 rotation;
     private final boolean mirrored;
     private final double skylightModifier;
+    private final double apparentSkyLightModifier;
+    private final double skyExposure;
     private final List<Vector4> gradient;
     private final Vector3 color;
     private final Sky.SkyMode mode;
@@ -41,6 +43,8 @@ public class SkyState {
         skyboxFileName = Reflection.getFieldValue(sky, "skyboxFileName", String[].class).clone();
         mirrored = Reflection.getFieldValue(sky, "mirrored", Boolean.class);
         skylightModifier = Reflection.getFieldValue(sky, "skyLightModifier", Double.class);
+        apparentSkyLightModifier = sky.getApparentSkyLight();
+        skyExposure = sky.getSkyExposure();
         List<?> gradientList = Reflection.getFieldValue(sky, "gradient", List.class);
         gradient = gradientList.stream().map(i -> new Vector4((Vector4) i)).collect(Collectors.toList());
         color = new Vector3(Reflection.getFieldValue(sky, "color", Vector3.class));
@@ -70,6 +74,8 @@ public class SkyState {
         if (!Reflection.equalsPublic(skyState.rotation, rotation)) return false;
         if (mirrored != skyState.mirrored) return false;
         if (Double.compare(skyState.skylightModifier, skylightModifier) != 0) return false;
+        if (Double.compare(skyState.apparentSkyLightModifier, apparentSkyLightModifier) != 0) return false;
+        if (Double.compare(skyState.skyExposure, skyExposure) != 0) return false;
         if (Double.compare(skyState.horizonOffset, horizonOffset) != 0) return false;
         if (Double.compare(skyState.sunIntensity, sunIntensity) != 0) return false;
         if (Double.compare(skyState.sunAzimuth, sunAzimuth) != 0) return false;

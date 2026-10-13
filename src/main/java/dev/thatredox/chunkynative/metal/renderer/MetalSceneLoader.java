@@ -27,7 +27,7 @@ public class MetalSceneLoader extends AbstractSceneLoader {
     protected final FunctionCache<int[], MetalBuffer> actorBvhBuffer;
     protected final FunctionCache<PackedSun, MetalBuffer> sunBuffer;
     protected MetalTexture skyTexture = null;
-    protected MetalBuffer skyIntensity = null;
+    protected MetalBuffer skyLight = null;
     protected SkyState skyState = null;
 
     protected MetalBuffer octreeData = null;
@@ -54,10 +54,10 @@ public class MetalSceneLoader extends AbstractSceneLoader {
             SkyState newSky = new SkyState(scene.sky(), scene.sun());
             if (!newSky.equals(skyState)) {
                 if (skyTexture != null) skyTexture.close();
-                if (skyIntensity != null) skyIntensity.close();
+                if (skyLight != null) skyLight.close();
                 SkyData sky = new SkyData(scene);
                 skyTexture = MetalTexture.create2D(context, sky.resolution, sky.resolution, sky.texture);
-                skyIntensity = MetalBuffer.ofFloats(context, new float[] {sky.intensity});
+                skyLight = MetalBuffer.ofFloats(context, sky.skyLight);
                 skyState = newSky;
                 packedSun = new PackedSun(scene.sun(), getTexturePalette());
             }
@@ -177,8 +177,8 @@ public class MetalSceneLoader extends AbstractSceneLoader {
         return skyTexture;
     }
 
-    public MetalBuffer getSkyIntensity() {
-        return skyIntensity;
+    public MetalBuffer getSkyLight() {
+        return skyLight;
     }
 
     public MetalBuffer getSun() {
