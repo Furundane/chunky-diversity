@@ -23,7 +23,7 @@ public class PreviewDebug {
     Chunky chunky = new Chunky(ChunkyOptions.getDefaults());
     new ChunkyCl().attach(chunky);
 
-    for (String id : new String[] {DefaultRenderManager.ChunkyPreviewID, "ChunkyClPreviewRenderer"}) {
+    for (String id : new String[] {DefaultRenderManager.ChunkyPreviewID, "ChunkyClPreviewRenderer", "ChunkyMetalPreviewRenderer"}) {
       Scene s = FeatureHarness.buildScene("PACKED", true);
       s.setRenderMode(RenderMode.PREVIEW);
       s.setPreviewRenderer(id);
