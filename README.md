@@ -54,10 +54,6 @@ Built and tested against Chunky commit [`527cb4a`](https://github.com/chunky-dev
 (2.5.0 snapshot). On the M4 Pro, a 1024 x 1024 pass of a test scene at ray depth 20 takes about 27 ms on
 Metal and 33 ms on Apple's OpenCL.
 
-| Water: CPU (left) vs GPU (right), without / with water |
-|---|
-| ![water](docs/images/water-cpu-vs-gpu.png) |
-
 ---
 
 This is a plugin for [Chunky](https://github.com/chunky-dev/chunky) which harnesses the power of the GPU with OpenCL 1.2+ to accelerate rendering.
