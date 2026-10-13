@@ -124,8 +124,10 @@ __kernel void render(
     for (int depth = 0; depth < *rayDepth; depth++) {
         // Russian roulette: from the third bounce on, end paths that carry little light with a probability
         // based on their throughput and boost the survivors to compensate, so the expected result is unchanged.
+        // The survival chance is at least 0.25: dim paths (e.g. underwater) otherwise survive so rarely, and
+        // get boosted so much, that they show up as speckles. Measured as free on a typical scene.
         if (depth >= 3) {
-            float survival = fmin(1.0f, fmax(throughput.x, fmax(throughput.y, throughput.z)));
+            float survival = fmin(1.0f, fmax(0.25f, fmax(throughput.x, fmax(throughput.y, throughput.z))));
             if (Random_nextFloat(random) >= survival) {
                 break;
             }

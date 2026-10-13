@@ -23,6 +23,19 @@ Octree Octree_create(__global const int* treeData, int depth) {
     return octree;
 }
 
+// The block a ray marching from pos in direction d is in. A coordinate exactly on a block boundary
+// belongs to the block the ray is moving into: with a tiny direction component, pos + d * OFFSET
+// rounds back onto the boundary in single precision, and floor() alone would pick the block behind
+// the ray, which the ray never passes through (it then creeps on by OFFSET per step and is lost).
+int3 Octree_blockAt(float3 pos, float3 d) {
+    float3 f = floor(pos);
+    int3 bp = make_int3(f.x, f.y, f.z);
+    if (pos.x == f.x && d.x < 0) bp.x -= 1;
+    if (pos.y == f.y && d.y < 0) bp.y -= 1;
+    if (pos.z == f.z && d.z < 0) bp.z -= 1;
+    return bp;
+}
+
 int Octree_get(__private Octree* self, int x, int y, int z) {
     int3 bp = make_int3(x, y, z);
 
@@ -68,7 +81,7 @@ bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette pal
         }
 
         float3 pos = ray.origin + ray.direction * distMarch;
-        int3 bp = intFloorFloat3(pos + offsetD);
+        int3 bp = Octree_blockAt(pos + offsetD, ray.direction);
 
         // Check inbounds
         int3 lv = bp >> depth;
@@ -163,7 +176,7 @@ bool Octree_exitWater(Octree self, image2d_array_t atlas, BlockPalette palette, 
         }
 
         float3 pos = ray.origin + ray.direction * distMarch;
-        int3 bp = intFloorFloat3(pos + offsetD);
+        int3 bp = Octree_blockAt(pos + offsetD, ray.direction);
         int3 lv = bp >> depth;
         if (lv.x != 0 || lv.y != 0 || lv.z != 0) {
             return false;
