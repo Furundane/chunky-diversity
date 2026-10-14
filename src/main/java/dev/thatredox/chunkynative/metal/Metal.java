@@ -91,8 +91,11 @@ public final class Metal {
      */
     public static native long dispatch(long context, long pipeline, long[] buffers, long[] textures, int threads);
 
-    /** Like {@link #compile}, for several kernel functions of the same source. */
-    public static native long[] compileFunctions(long context, String source, String[] functions, boolean fastMath);
+    /**
+     * Like {@link #compile}, for several kernel functions of the same source; with an intersection
+     * function (or null), like {@link #compileRt}.
+     */
+    public static native long[] compileFunctions(long context, String source, String[] functions, boolean fastMath, String intersectionFunction);
 
     /*
      * Batches: dispatches recorded with addDispatch run one after the other (each sees the results
@@ -104,6 +107,41 @@ public final class Metal {
     public static native void addDispatch(long batch, long pipeline, long[] buffers, long[] textures, int threads);
 
     public static native long runBatch(long batch);
+
+    /*
+     * Hardware ray tracing of the world octree (kernel side: kernel/include/hwrt.h). Pipelines from
+     * compileRt, block acceleration structures and function tables are passed to dispatch like
+     * buffers, at the kernel's index of the acceleration structure and the function table.
+     */
+
+    /** Whether the GPU supports Metal ray tracing (fast in hardware on Apple M3 and newer). */
+    public static native boolean supportsRaytracing(long context);
+
+    /** Like {@link #compile}, linked with an intersection function for {@link #newFunctionTable}. */
+    public static native long compileRt(long context, String source, String function, boolean fastMath, String intersectionFunction);
+
+    /**
+     * Builds bounding boxes and an acceleration structure for a packed world octree (as uploaded for
+     * the kernel). Throws RuntimeException with the reason when it can't, e.g. not enough memory.
+     *
+     * @param sectionShift 2, 3 or 4 for 4^3, 8^3 or 16^3 sections, 0 for one box per octree leaf
+     * @param budgetBytes  memory limit for the boxes and the build, 0 for half of the GPU's
+     *                     recommended working set minus what is already allocated
+     */
+    public static native long buildBlockAccel(long context, long octree, int depth, long blockPalette, int sectionShift, long budgetBytes);
+
+    /** Box count, acceleration structure bytes, box data bytes and build time (ns) of a block acceleration structure. */
+    public static native long[] blockAccelInfo(long accel);
+
+    /**
+     * Intersection function table of an rt pipeline for a block acceleration structure: its box data,
+     * then sceneBuffers, then the atlas texture in an argument buffer (0: none), at the function's
+     * buffer indices in that order.
+     */
+    public static native long newFunctionTable(long context, long rtPipeline, long accel, long[] sceneBuffers, long atlas);
+
+    /** Takes another reference to a handle (each reference is freed with {@link #release}). */
+    public static native long retain(long handle);
 
     public static native void release(long handle);
 }

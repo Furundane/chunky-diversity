@@ -11,6 +11,9 @@
 #include "sky.h"
 #include "water.h"
 #include "atmosphere.h"
+#ifdef CHUNKYCL_HWRT
+#include "hwrt.h"
+#endif
 
 
 typedef struct {
@@ -29,6 +32,10 @@ typedef struct {
     int sunStrategy;  // SUN_* flags from the scene's sun sampling strategy
     float emitterIntensity;  // Scene emitter intensity, 0 when emitters are disabled
     int drawDepth;
+#ifdef CHUNKYCL_HWRT  // Metal hardware ray tracing of the world octree (hwrt.h)
+    primitive_acceleration_structure hwAccel;
+    intersection_function_table<> hwFunctions;
+#endif
 } Scene;
 
 // Sun sampling strategy flags, see SunSamplingStrategy in Chunky
@@ -67,7 +74,21 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
         }
 
         bool hit = false;
+#if defined(CHUNKYCL_HWRT) && defined(CHUNKYCL_HWRT_PROBE)
+        {   // Diagnostic: one hardware call with its result unused, then the octree march
+            intersector<> isect;
+            isect.assume_geometry_type(geometry_type::bounding_box);
+            HwRtCandidate candidate;
+            metal::raytracing::ray r(tempRay.origin, tempRay.direction, 0.0f, tempRecord.distance);
+            intersection_result<> found = isect.intersect(r, self.hwAccel, self.hwFunctions, candidate);
+            tempRecord.flags |= (int) (found.distance < -1.0f);
+        }
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
+#elif defined(CHUNKYCL_HWRT)
+        hit |= HwRt_intersect(self.hwAccel, self.hwFunctions, self.octree, atlas, self.blockPalette, self.materialPalette, tempRay, &tempRecord, sample);
+#else
+        hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
+#endif
         hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
         hit |= Bvh_intersect(self.actorBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
 

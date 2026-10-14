@@ -4,7 +4,10 @@ import dev.thatredox.chunkynative.metal.renderer.MetalSceneLoader;
 import dev.thatredox.chunkynative.opencl.context.KernelLoader;
 import se.llbit.log.Log;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -17,12 +20,23 @@ public class MetalContext {
     private final Map<String, Long> renderPipelines = new HashMap<>();
     private final Map<String, long[]> wavefrontPipelines = new HashMap<>();
 
+    /** Kernel define that traces the world octree with hardware ray tracing (hwrt.h). */
+    public static final String HWRT_DEFINE = "CHUNKYCL_HWRT";
+
     private static volatile MetalContext instance;
 
     private MetalContext() {
         context = Metal.createContext();
         sceneLoader = new MetalSceneLoader(context);
         renderPipeline();
+    }
+
+    /** The defines with {@link #HWRT_DEFINE} added when a block acceleration structure is in use. */
+    public static String[] withAcceleration(String[] defines, long blockAccel) {
+        if (blockAccel == 0) return defines;
+        String[] result = Arrays.copyOf(defines, defines.length + 1);
+        result[defines.length] = HWRT_DEFINE;
+        return result;
     }
 
     /** The render kernel compiled with the given defines (see AtmosphereData.kernelDefines), cached. */
@@ -42,12 +56,18 @@ public class MetalContext {
     }
 
     /** The wavefront kernels ({@link #WAVEFRONT_FUNCTIONS}) compiled with the given defines, cached. */
-    public synchronized long[] wavefrontPipelines(String... defines) {
+    public synchronized long[] wavefrontPipelines(String... baseDefines) {
+        // -Dchunkymetal.defines=A,B adds kernel defines (for diagnostics).
+        List<String> all = new ArrayList<>(Arrays.asList(baseDefines));
+        String extra = System.getProperty("chunkymetal.defines", "");
+        if (!extra.isEmpty()) all.addAll(Arrays.asList(extra.split(",")));
+        String[] defines = all.toArray(new String[0]);
         String key = String.join(",", defines);
         return wavefrontPipelines.computeIfAbsent(key, k -> {
             long t0 = System.currentTimeMillis();
             long[] pipelines = Metal.compileFunctions(context,
-                    KernelLoader.loadSource("kernel", "wavefront.c", defines), WAVEFRONT_FUNCTIONS, false);
+                    KernelLoader.loadSource("kernel", "wavefront.c", defines), WAVEFRONT_FUNCTIONS, false,
+                    Arrays.asList(defines).contains(HWRT_DEFINE) ? "HwRt_firstBlock" : null);
             Log.infof("ChunkyCL Metal: %s, wavefront kernels [%s] compiled in %d ms",
                     Metal.deviceName(context), k, System.currentTimeMillis() - t0);
             return pipelines;
@@ -64,7 +84,10 @@ public class MetalContext {
         return renderPipelines.computeIfAbsent(key, k -> {
             long t0 = System.currentTimeMillis();
             // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
-            long pipeline = Metal.compile(context, KernelLoader.loadSource("kernel", "rayTracer.c", defines), function, false);
+            String source = KernelLoader.loadSource("kernel", "rayTracer.c", defines);
+            long pipeline = Arrays.asList(defines).contains(HWRT_DEFINE)
+                    ? Metal.compileRt(context, source, function, false, "HwRt_firstBlock")
+                    : Metal.compile(context, source, function, false);
             Log.infof("ChunkyCL Metal: %s, kernel [%s] compiled in %d ms",
                     Metal.deviceName(context), k, System.currentTimeMillis() - t0);
             return pipeline;

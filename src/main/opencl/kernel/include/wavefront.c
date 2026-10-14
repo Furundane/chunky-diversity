@@ -18,27 +18,39 @@
 #include "sky.h"
 #include "water.h"
 
-// Path state, one entry per path of the wave:
-//   pathF:   origin (3), direction (3), color (3), throughput (3)
-//   pathI:   ray material, ray flags, random state, alive
-//   hitF:    distance, normal (3), texCoord (2), sample color (4), emittance, specular, metalness, roughness
-//   hitI:    hit, material, flags, block, medium
-//   shadowF: origin (3), direction (3), contribution (3)  (sun light requested by wf_shade)
-//   shadowI: requested, ray material, ray flags
-#define PATH_F 12
-#define PATH_I 4
-#define HIT_F 14
-#define HIT_I 5
-#define SHADOW_F 9
-#define SHADOW_I 3
+// Path state, STATE_F floats in stateF and STATE_I ints in stateI per path of the wave, stored by
+// field (field k of path p at k * wave[3] + p) so that neighboring paths read neighboring memory:
+//   path   (floats 0..11):  origin (3), direction (3), color (3), throughput (3)
+//          (ints 0..3):     ray material, ray flags, random state, alive
+//   hit    (floats 12..25): distance, normal (3), texCoord (2), sample color (4), emittance, specular,
+//                           metalness, roughness
+//          (ints 4..8):     hit, material, flags, block, medium
+//   shadow (floats 26..34): origin (3), direction (3), contribution (3)  (sun light requested by wf_shade)
+//          (ints 9..11):    requested, ray material, ray flags
+#define STATE_F 35
+#define STATE_I 12
+#define HIT_F 12
+#define HIT_I 4
+#define SHADOW_F 26
+#define SHADOW_I 9
+
+// Metal hardware ray tracing of the world octree (hwrt.h), compiled in with CHUNKYCL_HWRT.
+#ifdef CHUNKYCL_HWRT
+#define WF_HWRT_PARAMS primitive_acceleration_structure hwAccel, intersection_function_table<> hwFunctions,
+#define WF_HWRT_SCENE(scene) scene.hwAccel = hwAccel; scene.hwFunctions = hwFunctions
+#else
+#define WF_HWRT_PARAMS
+#define WF_HWRT_SCENE(scene)
+#endif
 
 // The parameters of every wavefront kernel: the render kernel's, then the path state and the wave
-// ([0] first pixel, [1] number of paths, [2] bounce).
+// ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold).
 #define WF_PARAMS \
     __global const int* projectorType, \
     __global const float* cameraSettings, \
     __global const int* octreeDepth, \
     __global const int* octreeData, \
+    WF_HWRT_PARAMS \
     __global const int* waterOctreeDepth, \
     __global const int* waterOctreeData, \
     __global const int* bPalette, \
@@ -59,12 +71,8 @@
     __global const int* canvasConfig, \
     __global const int* rayDepth, \
     __global float* res, \
-    __global float* pathF, \
-    __global int* pathI, \
-    __global float* hitF, \
-    __global int* hitI, \
-    __global float* shadowF, \
-    __global int* shadowI, \
+    __global float* stateF, \
+    __global int* stateI, \
     __global const int* wave
 
 // The Scene of the render kernel. A macro, since the palettes keep pointers into the struct.
@@ -82,68 +90,92 @@
     scene.worldBvh = Bvh_new(worldBvhData, bvhTrigs, &scene.materialPalette); \
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette); \
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette); \
-    scene.drawDepth = 256
+    scene.drawDepth = 256; \
+    WF_HWRT_SCENE(scene)
 
-Ray WF_loadRay(__global const float* pathF, __global const int* pathI, int p) {
+// The state of one path: field k is f[k * stride] / in[k * stride].
+typedef struct {
+    __global float* f;
+    __global int* in;
+    int stride;
+} PathState;
+
+PathState WF_path(__global float* stateF, __global int* stateI, __global const int* wave, int p) {
+    PathState s;
+    s.f = stateF + p;
+    s.in = stateI + p;
+    s.stride = wave[3];
+    return s;
+}
+
+float3 WF_get3(PathState s, int k) {
+    return make_float3(s.f[k * s.stride], s.f[(k + 1) * s.stride], s.f[(k + 2) * s.stride]);
+}
+
+void WF_set3(PathState s, int k, float3 v) {
+    s.f[k * s.stride] = v.x;
+    s.f[(k + 1) * s.stride] = v.y;
+    s.f[(k + 2) * s.stride] = v.z;
+}
+
+#define WF_F(s, k) ((s).f[(k) * (s).stride])
+#define WF_I(s, k) ((s).in[(k) * (s).stride])
+
+Ray WF_loadRay(PathState s) {
     Ray ray;
-    ray.origin = vload3(0, pathF + p * PATH_F);
-    ray.direction = vload3(0, pathF + p * PATH_F + 3);
-    ray.material = pathI[p * PATH_I];
-    ray.flags = pathI[p * PATH_I + 1];
+    ray.origin = WF_get3(s, 0);
+    ray.direction = WF_get3(s, 3);
+    ray.material = WF_I(s, 0);
+    ray.flags = WF_I(s, 1);
     return ray;
 }
 
-void WF_storeRay(__global float* pathF, __global int* pathI, int p, Ray ray) {
-    vstore3(ray.origin, 0, pathF + p * PATH_F);
-    vstore3(ray.direction, 0, pathF + p * PATH_F + 3);
-    pathI[p * PATH_I] = ray.material;
-    pathI[p * PATH_I + 1] = ray.flags;
+void WF_storeRay(PathState s, Ray ray) {
+    WF_set3(s, 0, ray.origin);
+    WF_set3(s, 3, ray.direction);
+    WF_I(s, 0) = ray.material;
+    WF_I(s, 1) = ray.flags;
 }
 
-void WF_storeHit(__global float* hitF, __global int* hitI, int p, bool hit, IntersectionRecord record, MaterialSample sample) {
-    __global float* f = hitF + p * HIT_F;
-    __global int* i = hitI + p * HIT_I;
-    i[0] = hit ? 1 : 0;
+void WF_storeHit(PathState s, bool hit, IntersectionRecord record, MaterialSample sample) {
+    WF_I(s, HIT_I) = hit ? 1 : 0;
     if (!hit) return;
-    f[0] = record.distance;
-    vstore3(record.normal, 0, f + 1);
-    f[4] = record.texCoord.x;
-    f[5] = record.texCoord.y;
-    f[6] = sample.color.x;
-    f[7] = sample.color.y;
-    f[8] = sample.color.z;
-    f[9] = sample.color.w;
-    f[10] = sample.emittance;
-    f[11] = sample.specular;
-    f[12] = sample.metalness;
-    f[13] = sample.roughness;
-    i[1] = record.material;
-    i[2] = record.flags;
-    i[3] = record.block;
-    i[4] = record.medium;
+    WF_F(s, HIT_F) = record.distance;
+    WF_set3(s, HIT_F + 1, record.normal);
+    WF_F(s, HIT_F + 4) = record.texCoord.x;
+    WF_F(s, HIT_F + 5) = record.texCoord.y;
+    WF_F(s, HIT_F + 6) = sample.color.x;
+    WF_F(s, HIT_F + 7) = sample.color.y;
+    WF_F(s, HIT_F + 8) = sample.color.z;
+    WF_F(s, HIT_F + 9) = sample.color.w;
+    WF_F(s, HIT_F + 10) = sample.emittance;
+    WF_F(s, HIT_F + 11) = sample.specular;
+    WF_F(s, HIT_F + 12) = sample.metalness;
+    WF_F(s, HIT_F + 13) = sample.roughness;
+    WF_I(s, HIT_I + 1) = record.material;
+    WF_I(s, HIT_I + 2) = record.flags;
+    WF_I(s, HIT_I + 3) = record.block;
+    WF_I(s, HIT_I + 4) = record.medium;
 }
 
-void WF_loadHit(__global const float* hitF, __global const int* hitI, int p, __private IntersectionRecord* record, __private MaterialSample* sample) {
-    __global const float* f = hitF + p * HIT_F;
-    __global const int* i = hitI + p * HIT_I;
-    record->distance = f[0];
-    record->normal = vload3(0, f + 1);
-    record->texCoord = make_float2(f[4], f[5]);
-    sample->color = make_float4(f[6], f[7], f[8], f[9]);
-    sample->emittance = f[10];
-    sample->specular = f[11];
-    sample->metalness = f[12];
-    sample->roughness = f[13];
-    record->material = i[1];
-    record->flags = i[2];
-    record->block = i[3];
-    record->medium = i[4];
+void WF_loadHit(PathState s, __private IntersectionRecord* record, __private MaterialSample* sample) {
+    record->distance = WF_F(s, HIT_F);
+    record->normal = WF_get3(s, HIT_F + 1);
+    record->texCoord = make_float2(WF_F(s, HIT_F + 4), WF_F(s, HIT_F + 5));
+    sample->color = make_float4(WF_F(s, HIT_F + 6), WF_F(s, HIT_F + 7), WF_F(s, HIT_F + 8), WF_F(s, HIT_F + 9));
+    sample->emittance = WF_F(s, HIT_F + 10);
+    sample->specular = WF_F(s, HIT_F + 11);
+    sample->metalness = WF_F(s, HIT_F + 12);
+    sample->roughness = WF_F(s, HIT_F + 13);
+    record->material = WF_I(s, HIT_I + 1);
+    record->flags = WF_I(s, HIT_I + 2);
+    record->block = WF_I(s, HIT_I + 3);
+    record->medium = WF_I(s, HIT_I + 4);
 }
 
 // Scene_sunDirectLight without the shadow ray: the ray and the light it would add are left for
 // wf_shadow, which multiplies the light by the attenuation along the ray.
-void WF_requestSunLight(Scene self, Sun sun, Ray ray, IntersectionRecord record, Random random, float3 throughput,
-                        __global float* shadowF, __global int* shadowI, int p) {
+void WF_requestSunLight(Scene self, Sun sun, Ray ray, IntersectionRecord record, Random random, float3 throughput, PathState s) {
     float3 normal = record.normal;
     if (dot(normal, ray.direction) > 0) normal = -normal;
     float3 sunDirection = Sun_sampleDirection(sun, random);
@@ -151,20 +183,20 @@ void WF_requestSunLight(Scene self, Sun sun, Ray ray, IntersectionRecord record,
     if (cosine <= 0) {
         return;
     }
-    float3 origin = ray.origin + ray.direction * record.distance + normal * OFFSET;
     float mult = cosine * ((self.sunStrategy & SUN_LUMINOSITY) ? sun.luminosityPdf : 1);
-    vstore3(origin, 0, shadowF + p * SHADOW_F);
-    vstore3(sunDirection, 0, shadowF + p * SHADOW_F + 3);
-    vstore3(throughput * mult * sun.emittance, 0, shadowF + p * SHADOW_F + 6);
-    shadowI[p * SHADOW_I] = 1;
-    shadowI[p * SHADOW_I + 1] = record.medium;
-    shadowI[p * SHADOW_I + 2] = ray.flags & RAY_WATER;
+    WF_set3(s, SHADOW_F, ray.origin + ray.direction * record.distance + normal * OFFSET);
+    WF_set3(s, SHADOW_F + 3, sunDirection);
+    WF_set3(s, SHADOW_F + 6, throughput * mult * sun.emittance);
+    WF_I(s, SHADOW_I) = 1;
+    WF_I(s, SHADOW_I + 1) = record.medium;
+    WF_I(s, SHADOW_I + 2) = ray.flags & RAY_WATER;
 }
 
 __kernel void wf_generate(WF_PARAMS KERNEL_GID_PARAM) {
     int p = GLOBAL_ID;
     if (p >= wave[1]) return;
     int gid = wave[0] + p;
+    PathState s = WF_path(stateF, stateI, wave, p);
     WF_SCENE(scene);
 
     unsigned int randomState = *randomSeed + gid;
@@ -177,63 +209,67 @@ __kernel void wf_generate(WF_PARAMS KERNEL_GID_PARAM) {
     if (Octree_isInsideWater(scene.waterOctree, scene.blockPalette, ray.origin)) {
         ray.flags |= RAY_WATER;
     }
-    WF_storeRay(pathF, pathI, p, ray);
-    vstore3(make_float3(0, 0, 0), 0, pathF + p * PATH_F + 6);
-    vstore3(make_float3(1, 1, 1), 0, pathF + p * PATH_F + 9);
-    pathI[p * PATH_I + 2] = (int) randomState;
-    pathI[p * PATH_I + 3] = 1;
-    shadowI[p * SHADOW_I] = 0;
+    WF_storeRay(s, ray);
+    WF_set3(s, 6, make_float3(0, 0, 0));
+    WF_set3(s, 9, make_float3(1, 1, 1));
+    WF_I(s, 2) = (int) randomState;
+    WF_I(s, 3) = 1;
+    WF_I(s, SHADOW_I) = 0;
 }
 
 // Russian roulette, then the closest intersection of the path's ray.
 __kernel void wf_intersect(WF_PARAMS KERNEL_GID_PARAM) {
     int p = GLOBAL_ID;
-    if (p >= wave[1] || !pathI[p * PATH_I + 3]) return;
+    if (p >= wave[1]) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
     int depth = wave[2];
 
     // See the render kernel (rayTracer.c) for the survival chance.
     if (depth >= 3) {
-        unsigned int randomState = (unsigned int) pathI[p * PATH_I + 2];
+        unsigned int randomState = (unsigned int) WF_I(s, 2);
         Random random = &randomState;
-        float3 throughput = vload3(0, pathF + p * PATH_F + 9);
+        float3 throughput = WF_get3(s, 9);
         float survival = fmin(1.0f, fmax(0.25f, fmax(throughput.x, fmax(throughput.y, throughput.z))));
         bool survives = Random_nextFloat(random) < survival;
-        pathI[p * PATH_I + 2] = (int) randomState;
+        WF_I(s, 2) = (int) randomState;
         if (!survives) {
-            pathI[p * PATH_I + 3] = 0;
+            WF_I(s, 3) = 0;
             return;
         }
-        vstore3(throughput / survival, 0, pathF + p * PATH_F + 9);
+        WF_set3(s, 9, throughput / survival);
     }
 
     WF_SCENE(scene);
-    Ray ray = WF_loadRay(pathF, pathI, p);
+    Ray ray = WF_loadRay(s);
     IntersectionRecord record = IntersectionRecord_new();
     MaterialSample sample;
     Material material;
     bool hit = closestIntersect(scene, textureAtlas, ray, &record, &sample, &material);
-    WF_storeHit(hitF, hitI, p, hit, record, sample);
+    WF_storeHit(s, hit, record, sample);
 }
 
 // Everything the render kernel does with an intersection, except the shadow ray of sun sampling.
 __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
     int p = GLOBAL_ID;
-    if (p >= wave[1] || !pathI[p * PATH_I + 3]) return;
+    if (p >= wave[1]) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
     int depth = wave[2];
     WF_SCENE(scene);
     Sun sun = Sun_new(sunData);
 
-    Ray ray = WF_loadRay(pathF, pathI, p);
-    float3 color = vload3(0, pathF + p * PATH_F + 6);
-    float3 throughput = vload3(0, pathF + p * PATH_F + 9);
-    unsigned int randomState = (unsigned int) pathI[p * PATH_I + 2];
+    Ray ray = WF_loadRay(s);
+    float3 color = WF_get3(s, 6);
+    float3 throughput = WF_get3(s, 9);
+    unsigned int randomState = (unsigned int) WF_I(s, 2);
     Random random = &randomState;
     bool alive = true;
 
     IntersectionRecord record = IntersectionRecord_new();
     MaterialSample sample;
-    if (hitI[p * HIT_I]) {
-        WF_loadHit(hitF, hitI, p, &record, &sample);
+    if (WF_I(s, HIT_I)) {
+        WF_loadHit(s, &record, &sample);
         Material material = (record.flags & HIT_CLOUD) ? Material_cloud() : Material_get(scene.materialPalette, record.material);
 #ifdef CHUNKYCL_FOG
         if (ray.material == 0) {
@@ -253,7 +289,7 @@ __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
             bool diffuse = Water_scatter(scene.water, record, sample, &ray, &throughput, random);
             bool transmitted = ((ray.flags ^ incoming.flags) & RAY_WATER) != 0;
             if (diffuse && (scene.sunStrategy & SUN_SAMPLING) && depth + 1 < *rayDepth) {
-                WF_requestSunLight(scene, sun, incoming, record, random, throughput, shadowF, shadowI, p);
+                WF_requestSunLight(scene, sun, incoming, record, random, throughput, s);
             }
             if (diffuse) ray.flags |= RAY_DIFFUSE;
             else if (!transmitted) ray.flags &= ~RAY_DIFFUSE;
@@ -269,7 +305,7 @@ __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
                 color += pdfSample.spectrum * sample.emittance * scene.emitterIntensity * throughput;
             }
             if (diffuse && (scene.sunStrategy & SUN_SAMPLING) && depth + 1 < *rayDepth) {
-                WF_requestSunLight(scene, sun, ray, record, random, throughput, shadowF, shadowI, p);
+                WF_requestSunLight(scene, sun, ray, record, random, throughput, s);
             }
             if (diffuse) ray.flags |= RAY_DIFFUSE;
             else if (!pdfSample.transmitted) ray.flags &= ~RAY_DIFFUSE;
@@ -303,29 +339,29 @@ __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
         alive = false;
     }
 
-    WF_storeRay(pathF, pathI, p, ray);
-    vstore3(color, 0, pathF + p * PATH_F + 6);
-    vstore3(throughput, 0, pathF + p * PATH_F + 9);
-    pathI[p * PATH_I + 2] = (int) randomState;
-    pathI[p * PATH_I + 3] = alive ? 1 : 0;
+    WF_storeRay(s, ray);
+    WF_set3(s, 6, color);
+    WF_set3(s, 9, throughput);
+    WF_I(s, 2) = (int) randomState;
+    WF_I(s, 3) = alive ? 1 : 0;
 }
 
 // The sun light requested by wf_shade, through translucent blocks and water to the sun.
 __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
     int p = GLOBAL_ID;
-    if (p >= wave[1] || !shadowI[p * SHADOW_I]) return;
-    shadowI[p * SHADOW_I] = 0;
+    if (p >= wave[1]) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, SHADOW_I)) return;
+    WF_I(s, SHADOW_I) = 0;
     WF_SCENE(scene);
 
     Ray shadow;
-    shadow.origin = vload3(0, shadowF + p * SHADOW_F);
-    shadow.direction = vload3(0, shadowF + p * SHADOW_F + 3);
-    shadow.material = shadowI[p * SHADOW_I + 1];
-    shadow.flags = shadowI[p * SHADOW_I + 2];
+    shadow.origin = WF_get3(s, SHADOW_F);
+    shadow.direction = WF_get3(s, SHADOW_F + 3);
+    shadow.material = WF_I(s, SHADOW_I + 1);
+    shadow.flags = WF_I(s, SHADOW_I + 2);
     float3 attenuation = Scene_directLightAttenuation(scene, textureAtlas, shadow);
-    float3 color = vload3(0, pathF + p * PATH_F + 6);
-    color += vload3(0, shadowF + p * SHADOW_F + 6) * attenuation;
-    vstore3(color, 0, pathF + p * PATH_F + 6);
+    WF_set3(s, 6, WF_get3(s, 6) + WF_get3(s, SHADOW_F + 6) * attenuation);
 }
 
 // Adds the paths' light to the pass buffer (the running average over the samples so far).
@@ -333,7 +369,8 @@ __kernel void wf_finish(WF_PARAMS KERNEL_GID_PARAM) {
     int p = GLOBAL_ID;
     if (p >= wave[1]) return;
     int gid = wave[0] + p;
-    float3 color = vload3(0, pathF + p * PATH_F + 6);
+    PathState s = WF_path(stateF, stateI, wave, p);
+    float3 color = WF_get3(s, 6);
     int spp = *bufferSpp;
     float3 bufferColor = vload3(gid, res);
     bufferColor = (bufferColor * spp + color) / (spp + 1);
