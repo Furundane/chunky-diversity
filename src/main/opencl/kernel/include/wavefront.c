@@ -78,7 +78,7 @@
 
 // The parameters of every wavefront kernel: the render kernel's, then the path state and the wave
 // ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold, [4] input
-// queue, [5] input trace queue, [6] last trace round).
+// queue, [5] input trace queue, [6] last trace round, [7] leaves wf_resolve marches per round).
 #define WF_PARAMS \
     __global const int* projectorType, \
     __global const float* cameraSettings, \
@@ -304,8 +304,8 @@ __kernel void wf_traceProbe(WF_PARAMS KERNEL_GID_PARAM) {
 // The intersection of a bounce in parts, when the world octree is traced with hardware ray tracing:
 // wf_begin, then rounds of wf_prepareTrace, wf_trace and wf_resolve, then wf_intersectRest. The
 // hardware query (wf_trace) runs in a kernel of its own, which is much faster than in a kernel that
-// also tests blocks; wf_resolve tests the block found and queues the paths that missed it for the
-// next round. The last round finishes their traces with the octree march.
+// also tests blocks; wf_resolve marches the octree for a few leaves from the block found and queues
+// the paths that found nothing in them for the next round. The last round marches to the end.
 
 // Russian roulette (as in wf_intersect), then starts the world octree trace of the surviving paths.
 __kernel void wf_begin(WF_PARAMS KERNEL_GID_PARAM) {
@@ -383,9 +383,11 @@ __kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
 #endif
 }
 
-// Tests the block found by wf_trace. A hit is stored as the world octree hit; a path that missed
-// the block goes to the next round's queue, or in the last round finishes its trace with the
-// octree march.
+// Marches the octree from the block found by wf_trace, for wave[7] leaves (as many as needed in the
+// last round): the next blocks are usually close, so this resolves most rays that miss the first
+// block (a model that doesn't fill its block, a transparent pixel, the block the ray is inside of)
+// without another hardware query. A hit is stored as the world octree hit; a path that found
+// nothing in those leaves goes to the next round's queue.
 __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
 #ifdef CHUNKYCL_HWRT
     int p = WF_queuedTrace(queues, control, wave, GLOBAL_ID);
@@ -395,51 +397,34 @@ __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
 
     WF_SCENE(scene);
     Ray ray = WF_loadRay(s);
-    HwRtTrace trace;
-    trace.start = WF_F(s, TRACE_F);
-    trace.current = WF_I(s, TRACE_I);
-    trace.lastCell = int3(WF_I(s, TRACE_I + 1), WF_I(s, TRACE_I + 2), WF_I(s, TRACE_I + 3));
-    trace.queries = WF_I(s, TRACE_I + 4);
-    HwRtCandidate candidate;
-    candidate.cell = int3(WF_I(s, TRACE_I + 5), WF_I(s, TRACE_I + 6), WF_I(s, TRACE_I + 7));
-    candidate.data = WF_I(s, TRACE_I + 8);
-    candidate.leafExit = WF_F(s, TRACE_F + 2);
+    float start = WF_F(s, TRACE_F);
+    int queries = WF_I(s, TRACE_I + 4);
+    float distance = WF_F(s, TRACE_F + 1);
 
     // As closestIntersect starts the world octree test.
     IntersectionRecord record = IntersectionRecord_new();
     record.medium = ray.material;
     MaterialSample sample;
-    bool hit = HwRt_resolve(&trace, candidate, WF_F(s, TRACE_F + 1), scene.octree, textureAtlas, scene.blockPalette,
-                            scene.materialPalette, ray, &record, &sample);
-    if (!hit && wave[6]) {
-        // Last round: finish with the octree march from where the trace stands, so that this kernel
-        // makes no hardware calls (which would slow down all of it).
-        Ray rest = ray;
-        rest.origin = ray.origin + ray.direction * trace.start;
-        rest.material = trace.current;
-        IntersectionRecord restRecord = record;
-        if (Octree_octreeIntersect(scene.octree, textureAtlas, scene.blockPalette, scene.materialPalette, scene.drawDepth,
-                                   rest, &restRecord, &sample)) {
-            restRecord.distance += trace.start;
-            record = restRecord;
-            hit = true;
-        }
-    }
-    if (hit) {
+
+    // Blocks in between that can't be hit (air) end the block the ray was in.
+    float3 ad = fabs(ray.origin);
+    float eps = fmax(OFFSET, fmax(fmax(ad.x, ad.y), ad.z) * 4.8e-7f + distance * 4.8e-7f);
+    int current = distance > start + eps ? 0 : WF_I(s, TRACE_I);
+    bool last = wave[6] || queries >= 256;
+    int march = Octree_march(scene.octree, textureAtlas, scene.blockPalette, scene.materialPalette,
+                             last ? 256 : wave[7], ray, &record, &sample, &distance, &current);
+    if (march == MARCH_HIT) {
         WF_storeHit(s, true, record, sample);
-    } else if (!wave[6] && trace.queries < 256) {
-        WF_F(s, TRACE_F) = trace.start;
-        WF_I(s, TRACE_I) = trace.current;
-        WF_I(s, TRACE_I + 1) = trace.lastCell.x;
-        WF_I(s, TRACE_I + 2) = trace.lastCell.y;
-        WF_I(s, TRACE_I + 3) = trace.lastCell.z;
+    } else if (march == MARCH_MORE && !last) {
+        WF_F(s, TRACE_F) = distance;
+        WF_I(s, TRACE_I) = current;
         int out = 1 - wave[5];
         queues[(QUEUE_TRACE + out) * wave[3] + ATOMIC_ADD(control + CONTROL_TRACE + out, 1u)] = (uint) p;
     }
 #ifdef CHUNKYCL_HWRT_STATS
-    if (hit || wave[6] || trace.queries >= 256) {
+    if (march != MARCH_MORE || last) {
         ATOMIC_ADD(scene.stats, 1u);
-        ATOMIC_ADD(scene.stats + 1, (uint) trace.queries);
+        ATOMIC_ADD(scene.stats + 1, (uint) queries);
     }
 #endif
 #endif

@@ -54,39 +54,33 @@ int Octree_get(__private Octree* self, int x, int y, int z) {
     return -data;
 }
 
-bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int drawDepth, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
-    float distMarch = 0;
+// Results of Octree_march
+#define MARCH_DONE 0  // Nothing (more) along the ray: it left the octree or passed record->distance
+#define MARCH_HIT 1   // A block was hit (record, sample)
+#define MARCH_MORE 2  // The steps ran out; *distMarch and *current say where to continue
 
+// The octree march from distance *distMarch along the ray, inside block *current (see below), for at
+// most `steps` leaves. On MARCH_MORE, *distMarch and *current are updated to continue from.
+int Octree_march(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int steps, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private float* distMarch, __private int* current) {
     float3 invD = 1 / ray.direction;
     float3 offsetD = ray.direction * OFFSET;
-
     int depth = self.depth;
-    int current = ray.material;  // Block the ray is inside of
+    float dist = *distMarch;
+    int inside = *current;  // Block the ray is inside of
 
-    // Check if we are in bounds
-    if (!AABB_inside(self.bounds, ray.origin)) {
-        // Attempt to intersect with the octree
-        float dist = AABB_quick_intersect(self.bounds, ray.origin, invD);
-        if (isnan(dist) || dist < 0) {
-            return false;
-        } else {
-            distMarch += dist + OFFSET;
-        }
-    }
-
-    for (int i = 0; i < drawDepth; i++) {
-        if (distMarch > record->distance) {
+    for (int i = 0; i < steps; i++) {
+        if (dist > record->distance) {
             // There's already been a closer intersection!
-            return false;
+            return MARCH_DONE;
         }
 
-        float3 pos = ray.origin + ray.direction * distMarch;
+        float3 pos = ray.origin + ray.direction * dist;
         int3 bp = Octree_blockAt(pos + offsetD, ray.direction);
 
         // Check inbounds
         int3 lv = bp >> depth;
         if (lv.x != 0 || lv.y != 0 || lv.z != 0) {
-            return false;
+            return MARCH_DONE;
         }
 
         // Read the octree with depth
@@ -103,15 +97,15 @@ bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette pal
         // Like Chunky's Octree.enterBlock, a block next to the block the ray is in is only intersected if
         // it is a different block, so a ray that entered glass passes through the rest of that glass.
         if (data == 0 || data == 0x7FFFFFFE) {
-            current = 0;  // Air
-        } else if (data != current) {
+            inside = 0;  // Air
+        } else if (data != inside) {
             if (BlockPalette_intersectNormalizedBlock(palette, atlas, materialPalette, data, bp, ray, record, sample)) {
                 record->block = data;
-                record->medium = current;
-                return true;
+                record->medium = inside;
+                return MARCH_HIT;
             }
             // Missed: inside a full block through a transparent pixel, or past a model that doesn't fill its block.
-            current = palette.blockPalette[data] == 1 ? data : 0;
+            inside = palette.blockPalette[data] == 1 ? data : 0;
         }
 
         // Models that don't fill their block (AABB/quad models, light blocks, water) are only tested
@@ -126,9 +120,28 @@ bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette pal
         AABB box = AABB_new(lv.x << level, (lv.x + 1) << level,
                             lv.y << level, (lv.y + 1) << level,
                             lv.z << level, (lv.z + 1) << level);
-        distMarch += AABB_exit(box, pos + offsetD, invD) + OFFSET;
+        dist += AABB_exit(box, pos + offsetD, invD) + OFFSET;
     }
-    return false;
+    *distMarch = dist;
+    *current = inside;
+    return MARCH_MORE;
+}
+
+bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int drawDepth, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
+    float distMarch = 0;
+    int current = ray.material;  // Block the ray is inside of
+
+    // Check if we are in bounds
+    if (!AABB_inside(self.bounds, ray.origin)) {
+        // Attempt to intersect with the octree
+        float dist = AABB_quick_intersect(self.bounds, ray.origin, 1 / ray.direction);
+        if (isnan(dist) || dist < 0) {
+            return false;
+        } else {
+            distMarch += dist + OFFSET;
+        }
+    }
+    return Octree_march(self, atlas, palette, materialPalette, drawDepth, ray, record, sample, &distMarch, &current) == MARCH_HIT;
 }
 
 bool _Octree_isWater(BlockPalette palette, int data) {

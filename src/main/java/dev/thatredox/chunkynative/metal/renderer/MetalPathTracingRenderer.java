@@ -196,6 +196,8 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
          * ray tracing; the last round finishes the remaining traces in wf_resolve.
          */
         private static final int TRACE_ROUNDS = Integer.getInteger("chunkymetal.traceRounds", 3);
+        /** Octree leaves wf_resolve marches from each block found before another hardware query. */
+        private static final int RESOLVE_STEPS = Integer.getInteger("chunkymetal.resolveSteps", 8);
         // -Dchunkymetal.traceProbe=true runs wf_traceProbe before wf_intersect (diagnostic).
         private static final boolean TRACE_PROBE_ON = Boolean.getBoolean("chunkymetal.traceProbe");
         /** Threadgroup size of the indirect dispatches (WF_GROUP in wavefront.c). */
@@ -222,7 +224,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         private final MetalBuffer queues, control;
         /**
          * Per wave, bounce and trace round: first pixel, number of paths, bounce, paths the state
-         * buffers hold, input queue, input trace queue, last trace round.
+         * buffers hold, input queue, input trace queue, last trace round, leaves wf_resolve marches.
          */
         private final MetalBuffer[][][] waves;
         private final int pixels;
@@ -272,7 +274,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                 for (int d = 0; d <= rayDepth; d++) {
                     for (int r = 0; r < rounds; r++) {
                         waves[w][d][r] = MetalBuffer.ofInts(context,
-                                new int[] {first, count, d, (int) paths, d % 2, r % 2, r == rounds - 1 ? 1 : 0});
+                                new int[] {first, count, d, (int) paths, d % 2, r % 2, r == rounds - 1 ? 1 : 0, RESOLVE_STEPS});
                     }
                 }
             }
