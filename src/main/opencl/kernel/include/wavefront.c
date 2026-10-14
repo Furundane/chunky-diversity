@@ -31,30 +31,43 @@
 //          (ints 4..8):     hit, material, flags, block, medium
 //   shadow (floats 26..34): origin (3), direction (3), contribution (3)  (sun light requested by wf_shade)
 //          (ints 9..11):    requested, ray material, ray flags
-#define STATE_F 35
-#define STATE_I 12
+//   trace  (floats 35..37): HwRtTrace start, candidate distance, candidate leafExit
+//          (ints 12..21):   HwRtTrace current, lastCell (3), queries, candidate cell (3), candidate data,
+//                           candidate found  (world octree traced with hardware ray tracing, see wf_trace)
+#define STATE_F 38
+#define STATE_I 22
+#define TRACE_F 35
+#define TRACE_I 12
 #define HIT_F 12
 #define HIT_I 4
 #define SHADOW_F 26
 #define SHADOW_I 9
 
 // Queues: queues[k * wave[3] + i], k = 0 and 1: live paths (input and output alternate per bounce,
-// wave[4] is the input), k = 2: paths that requested sun light. control: queue lengths, the
-// indirect dispatch arguments (threadgroups) for the path and shadow queues, and statistics.
+// wave[4] is the input), k = 2: paths that requested sun light, k = 3 and 4: paths whose world
+// octree trace continues in the next round (wave[5] is the input). control: queue lengths
+// (control[k] for k < 3, control[CONTROL_TRACE + k - 3] for the trace queues), the indirect
+// dispatch arguments (threadgroups) for the path, shadow and trace queues, and statistics.
 #define QUEUE_SHADOW 2
+#define QUEUE_TRACE 3
 #define CONTROL_ARGS 4
 #define CONTROL_SHADOW_ARGS 8
 #define CONTROL_STATS 12
+#define CONTROL_TRACE 16
+#define CONTROL_TRACE_ARGS 20
 // Threadgroup size of the indirect dispatches (WavefrontJob.GROUP_SIZE).
 #define WF_GROUP 64
 
 // Metal hardware ray tracing of the world octree (hwrt.h), compiled in with CHUNKYCL_HWRT.
 #ifdef CHUNKYCL_HWRT
 #define WF_HWRT_PARAMS primitive_acceleration_structure hwAccel, intersection_function_table<> hwFunctions,
-#define WF_HWRT_SCENE(scene) scene.hwAccel = hwAccel; scene.hwFunctions = hwFunctions
+#define WF_HWRT_SCENE(scene) scene.hwAccel = hwAccel; scene.hwFunctions = hwFunctions; scene.hwWorld = true
+// The octree march in a kernel that should make no hardware calls.
+#define WF_NO_HWRT(scene) scene.hwWorld = false
 #else
 #define WF_HWRT_PARAMS
 #define WF_HWRT_SCENE(scene)
+#define WF_NO_HWRT(scene)
 #endif
 
 #ifdef CHUNKYCL_HWRT_STATS
@@ -65,7 +78,7 @@
 
 // The parameters of every wavefront kernel: the render kernel's, then the path state and the wave
 // ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold, [4] input
-// queue).
+// queue, [5] input trace queue, [6] last trace round).
 #define WF_PARAMS \
     __global const int* projectorType, \
     __global const float* cameraSettings, \
@@ -253,6 +266,7 @@ __kernel void wf_prepare(WF_PARAMS KERNEL_GID_PARAM) {
     control[CONTROL_ARGS + 2] = 1;
     control[1 - in] = 0;
     control[QUEUE_SHADOW] = 0;
+    control[CONTROL_TRACE] = 0;
 }
 
 // Indirect dispatch size for the shadow queue. One thread.
@@ -267,6 +281,206 @@ __kernel void wf_prepareShadow(WF_PARAMS KERNEL_GID_PARAM) {
 int WF_queued(__global const uint* queues, __global const uint* control, __global const int* wave, int k, int i) {
     if (i >= (int) control[k]) return -1;
     return (int) queues[k * wave[3] + i];
+}
+
+// Diagnostic (-Dchunkymetal.traceProbe=true): only the hardware query for the first block along each
+// queued path's ray, the minimal kernel a split of wf_intersect would run. Its result is written to
+// the hit distance, which wf_intersect overwrites.
+__kernel void wf_traceProbe(WF_PARAMS KERNEL_GID_PARAM) {
+#ifdef CHUNKYCL_HWRT
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
+    intersector<> isect;
+    isect.assume_geometry_type(geometry_type::bounding_box);
+    HwRtCandidate candidate;
+    metal::raytracing::ray r(WF_get3(s, 0), WF_get3(s, 3), 0.0f, INFINITY);
+    intersection_result<> found = isect.intersect(r, hwAccel, hwFunctions, candidate);
+    WF_F(s, HIT_F) = found.type == intersection_type::bounding_box ? found.distance + candidate.cell.x : -1.0f;
+#endif
+}
+
+// The intersection of a bounce in parts, when the world octree is traced with hardware ray tracing:
+// wf_begin, then rounds of wf_prepareTrace, wf_trace and wf_resolve, then wf_intersectRest. The
+// hardware query (wf_trace) runs in a kernel of its own, which is much faster than in a kernel that
+// also tests blocks; wf_resolve tests the block found and queues the paths that missed it for the
+// next round. The last round finishes their traces with the octree march.
+
+// Russian roulette (as in wf_intersect), then starts the world octree trace of the surviving paths.
+__kernel void wf_begin(WF_PARAMS KERNEL_GID_PARAM) {
+#ifdef CHUNKYCL_HWRT
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
+    if (wave[2] >= 3) {
+        unsigned int randomState = (unsigned int) WF_I(s, 2);
+        Random random = &randomState;
+        float3 throughput = WF_get3(s, 9);
+        float survival = fmin(1.0f, fmax(0.25f, fmax(throughput.x, fmax(throughput.y, throughput.z))));
+        bool survives = Random_nextFloat(random) < survival;
+        WF_I(s, 2) = (int) randomState;
+        if (!survives) {
+            WF_I(s, 3) = 0;
+            return;
+        }
+        WF_set3(s, 9, throughput / survival);
+    }
+    WF_I(s, HIT_I) = 0;
+    HwRtTrace trace = HwRt_begin(WF_loadRay(s));
+    WF_F(s, TRACE_F) = trace.start;
+    WF_I(s, TRACE_I) = trace.current;
+    WF_I(s, TRACE_I + 1) = trace.lastCell.x;
+    WF_I(s, TRACE_I + 2) = trace.lastCell.y;
+    WF_I(s, TRACE_I + 3) = trace.lastCell.z;
+    WF_I(s, TRACE_I + 4) = trace.queries;
+    queues[QUEUE_TRACE * wave[3] + ATOMIC_ADD(control + CONTROL_TRACE, 1u)] = (uint) p;
+#endif
+}
+
+// Indirect dispatch size for the input trace queue of this round; empties the output trace queue.
+// One thread.
+__kernel void wf_prepareTrace(WF_PARAMS KERNEL_GID_PARAM) {
+    if (GLOBAL_ID != 0) return;
+    int in = wave[5];
+    control[CONTROL_TRACE_ARGS] = (control[CONTROL_TRACE + in] + WF_GROUP - 1) / WF_GROUP;
+    control[CONTROL_TRACE_ARGS + 1] = 1;
+    control[CONTROL_TRACE_ARGS + 2] = 1;
+    control[CONTROL_TRACE + 1 - in] = 0;
+}
+
+int WF_queuedTrace(__global const uint* queues, __global const uint* control, __global const int* wave, int i) {
+    int in = wave[5];
+    if (i >= (int) control[CONTROL_TRACE + in]) return -1;
+    return (int) queues[(QUEUE_TRACE + in) * wave[3] + i];
+}
+
+// The hardware query for the next block of each queued trace.
+__kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
+#ifdef CHUNKYCL_HWRT
+    int p = WF_queuedTrace(queues, control, wave, GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    HwRtCandidate candidate;
+    float distance;
+    WF_I(s, TRACE_I + 4) += 1;
+    bool found = HwRt_query(hwAccel, hwFunctions, WF_loadRay(s), WF_F(s, TRACE_F), HUGE_VALF, &candidate, &distance);
+    WF_I(s, TRACE_I + 9) = found ? 1 : 0;
+    if (!found) {
+#ifdef CHUNKYCL_HWRT_STATS
+        ATOMIC_ADD(control + CONTROL_STATS, 1u);
+        ATOMIC_ADD(control + CONTROL_STATS + 1, (uint) WF_I(s, TRACE_I + 4));
+#endif
+        return;
+    }
+    WF_I(s, TRACE_I + 5) = candidate.cell.x;
+    WF_I(s, TRACE_I + 6) = candidate.cell.y;
+    WF_I(s, TRACE_I + 7) = candidate.cell.z;
+    WF_I(s, TRACE_I + 8) = candidate.data;
+    WF_F(s, TRACE_F + 1) = distance;
+    WF_F(s, TRACE_F + 2) = candidate.leafExit;
+#endif
+}
+
+// Tests the block found by wf_trace. A hit is stored as the world octree hit; a path that missed
+// the block goes to the next round's queue, or in the last round finishes its trace with the
+// octree march.
+__kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
+#ifdef CHUNKYCL_HWRT
+    int p = WF_queuedTrace(queues, control, wave, GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, TRACE_I + 9)) return;  // Nothing more along the ray
+
+    WF_SCENE(scene);
+    Ray ray = WF_loadRay(s);
+    HwRtTrace trace;
+    trace.start = WF_F(s, TRACE_F);
+    trace.current = WF_I(s, TRACE_I);
+    trace.lastCell = int3(WF_I(s, TRACE_I + 1), WF_I(s, TRACE_I + 2), WF_I(s, TRACE_I + 3));
+    trace.queries = WF_I(s, TRACE_I + 4);
+    HwRtCandidate candidate;
+    candidate.cell = int3(WF_I(s, TRACE_I + 5), WF_I(s, TRACE_I + 6), WF_I(s, TRACE_I + 7));
+    candidate.data = WF_I(s, TRACE_I + 8);
+    candidate.leafExit = WF_F(s, TRACE_F + 2);
+
+    // As closestIntersect starts the world octree test.
+    IntersectionRecord record = IntersectionRecord_new();
+    record.medium = ray.material;
+    MaterialSample sample;
+    bool hit = HwRt_resolve(&trace, candidate, WF_F(s, TRACE_F + 1), scene.octree, textureAtlas, scene.blockPalette,
+                            scene.materialPalette, ray, &record, &sample);
+    if (!hit && wave[6]) {
+        // Last round: finish with the octree march from where the trace stands, so that this kernel
+        // makes no hardware calls (which would slow down all of it).
+        Ray rest = ray;
+        rest.origin = ray.origin + ray.direction * trace.start;
+        rest.material = trace.current;
+        IntersectionRecord restRecord = record;
+        if (Octree_octreeIntersect(scene.octree, textureAtlas, scene.blockPalette, scene.materialPalette, scene.drawDepth,
+                                   rest, &restRecord, &sample)) {
+            restRecord.distance += trace.start;
+            record = restRecord;
+            hit = true;
+        }
+    }
+    if (hit) {
+        WF_storeHit(s, true, record, sample);
+    } else if (!wave[6] && trace.queries < 256) {
+        WF_F(s, TRACE_F) = trace.start;
+        WF_I(s, TRACE_I) = trace.current;
+        WF_I(s, TRACE_I + 1) = trace.lastCell.x;
+        WF_I(s, TRACE_I + 2) = trace.lastCell.y;
+        WF_I(s, TRACE_I + 3) = trace.lastCell.z;
+        int out = 1 - wave[5];
+        queues[(QUEUE_TRACE + out) * wave[3] + ATOMIC_ADD(control + CONTROL_TRACE + out, 1u)] = (uint) p;
+    }
+#ifdef CHUNKYCL_HWRT_STATS
+    if (hit || wave[6] || trace.queries >= 256) {
+        ATOMIC_ADD(scene.stats, 1u);
+        ATOMIC_ADD(scene.stats + 1, (uint) trace.queries);
+    }
+#endif
+#endif
+}
+
+// Alternative to the rounds (-Dchunkymetal.traceMode=fused): the whole world octree trace with
+// hardware ray tracing in one small kernel (after wf_begin), then wf_intersectRest.
+__kernel void wf_world(WF_PARAMS KERNEL_GID_PARAM) {
+#ifdef CHUNKYCL_HWRT
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
+    WF_SCENE(scene);
+    Ray ray = WF_loadRay(s);
+    IntersectionRecord record = IntersectionRecord_new();
+    record.medium = ray.material;
+    MaterialSample sample;
+    HwRtTrace trace = HwRt_begin(ray);
+    if (HwRt_continue(hwAccel, hwFunctions, &trace, scene.octree, textureAtlas, scene.blockPalette,
+                      scene.materialPalette, ray, &record, &sample)) {
+        WF_storeHit(s, true, record, sample);
+    }
+#endif
+}
+
+// The rest of the intersection after the world octree (entities, clouds, water), like closestIntersect.
+__kernel void wf_intersectRest(WF_PARAMS KERNEL_GID_PARAM) {
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3)) return;
+    WF_SCENE(scene);
+    Ray ray = WF_loadRay(s);
+    IntersectionRecord record = IntersectionRecord_new();
+    record.medium = ray.material;
+    MaterialSample sample;
+    bool hit = WF_I(s, HIT_I) != 0;
+    if (hit) WF_loadHit(s, &record, &sample);
+    hit = Scene_intersectAfterWorld(scene, textureAtlas, ray, ray, hit, &record, &sample);
+    WF_storeHit(s, hit, record, sample);
 }
 
 // Russian roulette, then the closest intersection of the path's ray.
@@ -415,6 +629,9 @@ __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
     if (!WF_I(s, SHADOW_I)) return;
     WF_I(s, SHADOW_I) = 0;
     WF_SCENE(scene);
+#ifndef CHUNKYCL_HWRT_SHADOWS
+    WF_NO_HWRT(scene);  // Shadow rays: hardware calls in this kernel cost more than they save
+#endif
 
     Ray shadow;
     shadow.origin = WF_get3(s, SHADOW_F);

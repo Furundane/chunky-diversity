@@ -55,6 +55,7 @@ __kernel void render(
 #ifdef CHUNKYCL_HWRT
     scene.hwAccel = hwAccel;
     scene.hwFunctions = hwFunctions;
+    scene.hwWorld = true;
 #endif
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
@@ -242,6 +243,7 @@ __kernel void preview(
 #ifdef CHUNKYCL_HWRT
     scene.hwAccel = hwAccel;
     scene.hwFunctions = hwFunctions;
+    scene.hwWorld = true;
 #endif
     scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);

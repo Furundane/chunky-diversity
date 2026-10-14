@@ -35,6 +35,9 @@ typedef struct {
 #ifdef CHUNKYCL_HWRT  // Metal hardware ray tracing of the world octree (hwrt.h)
     primitive_acceleration_structure hwAccel;
     intersection_function_table<> hwFunctions;
+    // false: use the octree march anyway. Set to a constant in a kernel, so that the compiler drops
+    // the unused path from it (hardware calls slow down the whole kernel they are in).
+    bool hwWorld;
 #endif
 #ifdef CHUNKYCL_HWRT_STATS
     __global uint* stats;
@@ -59,6 +62,44 @@ Material Material_cloud() {
     cloud.specular_metalness_roughness = 0;
     cloud.ior = DEFAULT_IOR;
     return cloud;
+}
+
+// The part of closestIntersect after the world octree: entities, clouds and water, within the
+// distance of the world octree hit (hit: whether there is one, in record). tempRay is the ray from
+// where this intersection starts; ray decides how water is treated.
+bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, Ray ray, bool hit,
+                               __private IntersectionRecord* record, __private MaterialSample* sample) {
+    hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, record, sample);
+    hit |= Bvh_intersect(self.actorBvh, atlas, self.materialPalette, tempRay, record, sample);
+
+#ifdef CHUNKYCL_CLOUDS  // Only compiled in when the scene has clouds (see AtmosphereData.kernelDefines)
+    // Clouds come after the blocks, which do not set the record flags, and before water, which does.
+    float cloudT;
+    float3 cloudNormal;
+    if (self.clouds && Clouds_intersect(self.atmosphere, tempRay.origin, tempRay.direction, record->distance, &cloudT, &cloudNormal)) {
+        record->distance = cloudT;
+        record->normal = cloudNormal;
+        record->texCoord = make_float2(0, 0);
+        record->material = 0;
+        record->block = 0;
+        record->flags = HIT_CLOUD;
+        // CloudMaterial: opaque white
+        sample->color = make_float4(1, 1, 1, 1);
+        sample->emittance = 0;
+        sample->specular = 0;
+        sample->metalness = 0;
+        sample->roughness = 0;
+        hit = true;
+    }
+#endif
+
+    // Water is tested last so that only a closer water surface sets HIT_WATER.
+    if (ray.flags & RAY_WATER) {
+        hit |= Octree_exitWater(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
+    } else {
+        hit |= Octree_octreeIntersect(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
+    }
+    return hit;
 }
 
 bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private Material* mat) {
@@ -88,45 +129,20 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
         }
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
 #elif defined(CHUNKYCL_HWRT)
-        int hwCalls = 0;
-        hit |= HwRt_intersect(self.hwAccel, self.hwFunctions, self.octree, atlas, self.blockPalette, self.materialPalette, tempRay, &tempRecord, sample, &hwCalls);
+        if (self.hwWorld) {
+            int hwCalls = 0;
+            hit |= HwRt_intersect(self.hwAccel, self.hwFunctions, self.octree, atlas, self.blockPalette, self.materialPalette, tempRay, &tempRecord, sample, &hwCalls);
 #ifdef CHUNKYCL_HWRT_STATS  // Diagnostic: world intersections and hardware calls (wavefront.c)
-        ATOMIC_ADD(self.stats, 1u);
-        ATOMIC_ADD(self.stats + 1, (uint) hwCalls);
+            ATOMIC_ADD(self.stats, 1u);
+            ATOMIC_ADD(self.stats + 1, (uint) hwCalls);
 #endif
+        } else {
+            hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
+        }
 #else
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
 #endif
-        hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
-        hit |= Bvh_intersect(self.actorBvh, atlas, self.materialPalette, tempRay, &tempRecord, sample);
-
-#ifdef CHUNKYCL_CLOUDS  // Only compiled in when the scene has clouds (see AtmosphereData.kernelDefines)
-        // Clouds come after the blocks, which do not set the record flags, and before water, which does.
-        float cloudT;
-        float3 cloudNormal;
-        if (self.clouds && Clouds_intersect(self.atmosphere, tempRay.origin, tempRay.direction, tempRecord.distance, &cloudT, &cloudNormal)) {
-            tempRecord.distance = cloudT;
-            tempRecord.normal = cloudNormal;
-            tempRecord.texCoord = make_float2(0, 0);
-            tempRecord.material = 0;
-            tempRecord.block = 0;
-            tempRecord.flags = HIT_CLOUD;
-            // CloudMaterial: opaque white
-            sample->color = make_float4(1, 1, 1, 1);
-            sample->emittance = 0;
-            sample->specular = 0;
-            sample->metalness = 0;
-            sample->roughness = 0;
-            hit = true;
-        }
-#endif
-
-        // Water is tested last so that only a closer water surface sets HIT_WATER.
-        if (ray.flags & RAY_WATER) {
-            hit |= Octree_exitWater(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
-        } else {
-            hit |= Octree_octreeIntersect(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
-        }
+        hit = Scene_intersectAfterWorld(self, atlas, tempRay, ray, hit, &tempRecord, sample);
 
         if (!hit) {
             return false;

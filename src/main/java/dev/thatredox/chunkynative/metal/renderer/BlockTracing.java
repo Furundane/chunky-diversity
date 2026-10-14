@@ -20,6 +20,11 @@ final class BlockTracing implements AutoCloseable {
         accel = Metal.retain(loader.blockAcceleration());
     }
 
+    /** Whether the world octree is traced with hardware ray tracing. */
+    boolean hardware() {
+        return accel != 0;
+    }
+
     /** Kernel defines for this kind of tracing. */
     String[] defines(String[] base) {
         return MetalContext.withAcceleration(base, accel);

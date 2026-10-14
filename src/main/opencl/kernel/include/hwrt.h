@@ -117,57 +117,102 @@ HwRtHit HwRt_firstBlock(float3 origin [[origin]],
     return result;
 }
 
+// Where a trace of the world octree stands between hardware queries: the distance to continue from,
+// the block the ray is inside of (as Octree_octreeIntersect tracks it) and the last block tested.
+typedef struct {
+    float start;
+    int current;
+    int3 lastCell;
+    int queries;
+} HwRtTrace;
+
+HwRtTrace HwRt_begin(Ray ray) {
+    HwRtTrace trace;
+    trace.start = 0;
+    trace.current = ray.material;
+    trace.lastCell = int3(0x7FFFFFFF);
+    trace.queries = 0;
+    return trace;
+}
+
+// The first block along the ray from `start` that can be hit, within maxDistance (hardware query).
+bool HwRt_query(primitive_acceleration_structure accel, intersection_function_table<> functions,
+                Ray ray, float start, float maxDistance, __private HwRtCandidate* candidate, __private float* distance) {
+    intersector<> isect;
+    isect.assume_geometry_type(geometry_type::bounding_box);
+    HwRtCandidate found;
+    metal::raytracing::ray r(ray.origin, ray.direction, start, maxDistance);
+    intersection_result<> result = isect.intersect(r, accel, functions, found);
+    if (result.type != intersection_type::bounding_box) return false;
+    *candidate = found;
+    *distance = result.distance;
+    return true;
+}
+
+// Tests the block found by HwRt_query at `distance`: true with the hit in record and sample, or
+// false with trace->start advanced past the block (or the whole leaf) to look for the next one.
+bool HwRt_resolve(__private HwRtTrace* trace, HwRtCandidate candidate, float distance,
+                  Octree octree, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette,
+                  Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
+    int3 cell = candidate.cell;
+    float3 ad = fabs(ray.origin);
+
+    // Blocks in between that can't be hit (air) end the block the ray was in.
+    float eps = fmax(OFFSET, fmax(fmax(ad.x, ad.y), ad.z) * 4.8e-7f + distance * 4.8e-7f);
+    if (distance > trace->start + eps) trace->current = 0;
+
+    int data = candidate.data != 0 ? candidate.data : Octree_get(&octree, cell.x, cell.y, cell.z);
+    bool block = data != 0 && data != 0x7FFFFFFE;
+    if (block && data != trace->current && !all(cell == trace->lastCell)) {
+        IntersectionRecord tempRecord = *record;
+        MaterialSample tempSample = *sample;
+        if (BlockPalette_intersectNormalizedBlock(palette, atlas, materialPalette, data, cell, ray, &tempRecord, &tempSample)) {
+            tempRecord.block = data;
+            tempRecord.medium = trace->current;
+            *record = tempRecord;
+            *sample = tempSample;
+            return true;
+        }
+    }
+    trace->current = block && palette.blockPalette[data] == 1 ? data : 0;
+    trace->lastCell = cell;
+
+    // Continue after this block, or after the whole leaf when the ray is now inside its block.
+    float3 lo = float3(cell);
+    float3 invD = 1 / ray.direction;
+    float3 tt = (select(lo, lo + 1, ray.direction > 0) - ray.origin) * invD;
+    float exit = fmin(fmin(tt.x, tt.y), tt.z);
+    if (candidate.data != 0 && trace->current == data) exit = fmax(exit, candidate.leafExit);
+    trace->start = fmax(exit, trace->start) + eps;
+    return false;
+}
+
+// Continues a trace with queries and tests until a block is hit, nothing more is found within
+// record->distance, or 256 queries were made in all.
+bool HwRt_continue(primitive_acceleration_structure accel, intersection_function_table<> functions,
+                   __private HwRtTrace* trace, Octree octree, image2d_array_t atlas, BlockPalette palette,
+                   MaterialPalette materialPalette, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
+    while (trace->queries < 256) {
+        if (trace->start >= record->distance) return false;
+        HwRtCandidate candidate;
+        float distance;
+        trace->queries++;
+        if (!HwRt_query(accel, functions, ray, trace->start, record->distance, &candidate, &distance)) return false;
+        if (HwRt_resolve(trace, candidate, distance, octree, atlas, palette, materialPalette, ray, record, sample)) return true;
+    }
+    return false;
+}
+
 // Closest block of the world octree along the ray within record->distance, like
 // Octree_octreeIntersect (which this replaces), with the same tracking of the block the ray is in.
-// *calls counts the hardware intersection calls (one per block that turned out to be missed, plus one).
+// *calls counts the hardware queries.
 bool HwRt_intersect(primitive_acceleration_structure accel, intersection_function_table<> functions,
                     Octree octree, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette,
                     Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private int* calls) {
-    intersector<> isect;
-    isect.assume_geometry_type(geometry_type::bounding_box);
-    float3 invD = 1 / ray.direction;
-    float3 ad = fabs(ray.origin);
-
-    int current = ray.material;  // Block the ray is inside of
-    float start = 0;
-    int3 lastCell = int3(0x7FFFFFFF);
-    for (int i = 0; i < 256; i++) {
-        if (start >= record->distance) return false;
-        HwRtCandidate candidate;
-        metal::raytracing::ray r(ray.origin, ray.direction, start, record->distance);
-        intersection_result<> found = isect.intersect(r, accel, functions, candidate);
-        (*calls)++;
-        if (found.type != intersection_type::bounding_box) return false;
-        int3 cell = candidate.cell;
-
-        // Blocks in between that can't be hit (air) end the block the ray was in.
-        float eps = fmax(OFFSET, fmax(fmax(ad.x, ad.y), ad.z) * 4.8e-7f + found.distance * 4.8e-7f);
-        if (found.distance > start + eps) current = 0;
-
-        int data = candidate.data != 0 ? candidate.data : Octree_get(&octree, cell.x, cell.y, cell.z);
-        bool block = data != 0 && data != 0x7FFFFFFE;
-        if (block && data != current && !all(cell == lastCell)) {
-            IntersectionRecord tempRecord = *record;
-            MaterialSample tempSample = *sample;
-            if (BlockPalette_intersectNormalizedBlock(palette, atlas, materialPalette, data, cell, ray, &tempRecord, &tempSample)) {
-                tempRecord.block = data;
-                tempRecord.medium = current;
-                *record = tempRecord;
-                *sample = tempSample;
-                return true;
-            }
-        }
-        current = block && palette.blockPalette[data] == 1 ? data : 0;
-        lastCell = cell;
-
-        // Continue after this block, or after the whole leaf when the ray is now inside its block.
-        float3 lo = float3(cell);
-        float3 tt = (select(lo, lo + 1, ray.direction > 0) - ray.origin) * invD;
-        float exit = fmin(fmin(tt.x, tt.y), tt.z);
-        if (candidate.data != 0 && current == data) exit = fmax(exit, candidate.leafExit);
-        start = fmax(exit, start) + eps;
-    }
-    return false;
+    HwRtTrace trace = HwRt_begin(ray);
+    bool hit = HwRt_continue(accel, functions, &trace, octree, atlas, palette, materialPalette, ray, record, sample);
+    *calls = trace.queries;
+    return hit;
 }
 
 #endif
