@@ -1,10 +1,14 @@
 // Wavefront version of the render kernel (rayTracer.c): the path tracing loop split into small
-// kernels that run once per bounce over all paths of a wave, so that the kernels which trace rays
-// (wf_intersect, wf_shadow) are not burdened with the state of the whole path tracer.
+// kernels that run once per bounce over the live paths of a wave, so that the kernels which trace
+// rays (wf_intersect, wf_shadow) are not burdened with the state of the whole path tracer.
 //
-// Per render pass and wave of paths: wf_generate, then for each bounce wf_intersect, wf_shade and
-// wf_shadow, then wf_finish. The paths do the same work as in the render kernel, in the same order
-// and with the same random numbers.
+// Per render pass and wave of paths: wf_generate (all paths, queued), then for each bounce
+// wf_prepare, wf_intersect and wf_shade over the queued live paths, wf_prepareShadow and wf_shadow
+// over the paths that requested sun light, then wf_finish (all paths). wf_shade queues the paths
+// still alive for the next bounce; the prepare kernels turn queue lengths into indirect dispatch
+// sizes on the GPU. Every path keeps its own random state and writes only its own pixel, so the
+// order of the queues does not change the result: the paths do the same work as in the render
+// kernel, in the same order and with the same random numbers.
 
 #include "../opencl.h"
 #include "compat.h"
@@ -34,6 +38,16 @@
 #define SHADOW_F 26
 #define SHADOW_I 9
 
+// Queues: queues[k * wave[3] + i], k = 0 and 1: live paths (input and output alternate per bounce,
+// wave[4] is the input), k = 2: paths that requested sun light. control: queue lengths, the
+// indirect dispatch arguments (threadgroups) for the path and shadow queues, and statistics.
+#define QUEUE_SHADOW 2
+#define CONTROL_ARGS 4
+#define CONTROL_SHADOW_ARGS 8
+#define CONTROL_STATS 12
+// Threadgroup size of the indirect dispatches (WavefrontJob.GROUP_SIZE).
+#define WF_GROUP 64
+
 // Metal hardware ray tracing of the world octree (hwrt.h), compiled in with CHUNKYCL_HWRT.
 #ifdef CHUNKYCL_HWRT
 #define WF_HWRT_PARAMS primitive_acceleration_structure hwAccel, intersection_function_table<> hwFunctions,
@@ -43,8 +57,15 @@
 #define WF_HWRT_SCENE(scene)
 #endif
 
+#ifdef CHUNKYCL_HWRT_STATS
+#define WF_STATS_SCENE(scene) scene.stats = control + CONTROL_STATS
+#else
+#define WF_STATS_SCENE(scene)
+#endif
+
 // The parameters of every wavefront kernel: the render kernel's, then the path state and the wave
-// ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold).
+// ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold, [4] input
+// queue).
 #define WF_PARAMS \
     __global const int* projectorType, \
     __global const float* cameraSettings, \
@@ -73,6 +94,8 @@
     __global float* res, \
     __global float* stateF, \
     __global int* stateI, \
+    __global uint* queues, \
+    __global uint* control, \
     __global const int* wave
 
 // The Scene of the render kernel. A macro, since the palettes keep pointers into the struct.
@@ -91,7 +114,8 @@
     scene.actorBvh = Bvh_new(actorBvhData, bvhTrigs, &scene.materialPalette); \
     scene.blockPalette = BlockPalette_new(bPalette, quadModels, aabbModels, &scene.materialPalette); \
     scene.drawDepth = 256; \
-    WF_HWRT_SCENE(scene)
+    WF_HWRT_SCENE(scene); \
+    WF_STATS_SCENE(scene)
 
 // The state of one path: field k is f[k * stride] / in[k * stride].
 typedef struct {
@@ -215,12 +239,40 @@ __kernel void wf_generate(WF_PARAMS KERNEL_GID_PARAM) {
     WF_I(s, 2) = (int) randomState;
     WF_I(s, 3) = 1;
     WF_I(s, SHADOW_I) = 0;
+    queues[p] = (uint) p;
+    if (p == 0) control[0] = (uint) wave[1];
+}
+
+// Indirect dispatch size for the input queue of this bounce; empties the output and shadow queues.
+// One thread.
+__kernel void wf_prepare(WF_PARAMS KERNEL_GID_PARAM) {
+    if (GLOBAL_ID != 0) return;
+    int in = wave[4];
+    control[CONTROL_ARGS] = (control[in] + WF_GROUP - 1) / WF_GROUP;
+    control[CONTROL_ARGS + 1] = 1;
+    control[CONTROL_ARGS + 2] = 1;
+    control[1 - in] = 0;
+    control[QUEUE_SHADOW] = 0;
+}
+
+// Indirect dispatch size for the shadow queue. One thread.
+__kernel void wf_prepareShadow(WF_PARAMS KERNEL_GID_PARAM) {
+    if (GLOBAL_ID != 0) return;
+    control[CONTROL_SHADOW_ARGS] = (control[QUEUE_SHADOW] + WF_GROUP - 1) / WF_GROUP;
+    control[CONTROL_SHADOW_ARGS + 1] = 1;
+    control[CONTROL_SHADOW_ARGS + 2] = 1;
+}
+
+// The path for thread i of a dispatch over queue k, or -1 past the end of the queue.
+int WF_queued(__global const uint* queues, __global const uint* control, __global const int* wave, int k, int i) {
+    if (i >= (int) control[k]) return -1;
+    return (int) queues[k * wave[3] + i];
 }
 
 // Russian roulette, then the closest intersection of the path's ray.
 __kernel void wf_intersect(WF_PARAMS KERNEL_GID_PARAM) {
-    int p = GLOBAL_ID;
-    if (p >= wave[1]) return;
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
     if (!WF_I(s, 3)) return;
     int depth = wave[2];
@@ -251,8 +303,8 @@ __kernel void wf_intersect(WF_PARAMS KERNEL_GID_PARAM) {
 
 // Everything the render kernel does with an intersection, except the shadow ray of sun sampling.
 __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
-    int p = GLOBAL_ID;
-    if (p >= wave[1]) return;
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
     if (!WF_I(s, 3)) return;
     int depth = wave[2];
@@ -344,12 +396,21 @@ __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
     WF_set3(s, 9, throughput);
     WF_I(s, 2) = (int) randomState;
     WF_I(s, 3) = alive ? 1 : 0;
+
+    // Queue the path for the next bounce and for its sun light.
+    if (alive) {
+        int out = 1 - wave[4];
+        queues[out * wave[3] + ATOMIC_ADD(control + out, 1u)] = (uint) p;
+    }
+    if (WF_I(s, SHADOW_I)) {
+        queues[QUEUE_SHADOW * wave[3] + ATOMIC_ADD(control + QUEUE_SHADOW, 1u)] = (uint) p;
+    }
 }
 
 // The sun light requested by wf_shade, through translucent blocks and water to the sun.
 __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
-    int p = GLOBAL_ID;
-    if (p >= wave[1]) return;
+    int p = WF_queued(queues, control, wave, QUEUE_SHADOW, GLOBAL_ID);
+    if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
     if (!WF_I(s, SHADOW_I)) return;
     WF_I(s, SHADOW_I) = 0;

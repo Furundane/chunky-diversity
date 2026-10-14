@@ -55,10 +55,16 @@ inline void vstore3(float3 v, size_t i, device float* p) {
     p[3 * i + 2] = v.z;
 }
 
+// Atomic add on a __global uint, returning the previous value
+#define ATOMIC_ADD(p, v) atomic_fetch_add_explicit((device atomic_uint*) (p), (v), memory_order_relaxed)
+
 #else
 
 #define KERNEL_GID_PARAM
 #define GLOBAL_ID get_global_id(0)
+
+// Atomic add on a __global uint, returning the previous value
+#define ATOMIC_ADD(p, v) atomic_add((p), (v))
 
 
 // Some OpenCL headers (Apple's) predefine fixed-arity versions; these accept any arity,

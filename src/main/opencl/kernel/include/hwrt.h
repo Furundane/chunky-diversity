@@ -119,9 +119,10 @@ HwRtHit HwRt_firstBlock(float3 origin [[origin]],
 
 // Closest block of the world octree along the ray within record->distance, like
 // Octree_octreeIntersect (which this replaces), with the same tracking of the block the ray is in.
+// *calls counts the hardware intersection calls (one per block that turned out to be missed, plus one).
 bool HwRt_intersect(primitive_acceleration_structure accel, intersection_function_table<> functions,
                     Octree octree, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette,
-                    Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
+                    Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private int* calls) {
     intersector<> isect;
     isect.assume_geometry_type(geometry_type::bounding_box);
     float3 invD = 1 / ray.direction;
@@ -135,6 +136,7 @@ bool HwRt_intersect(primitive_acceleration_structure accel, intersection_functio
         HwRtCandidate candidate;
         metal::raytracing::ray r(ray.origin, ray.direction, start, record->distance);
         intersection_result<> found = isect.intersect(r, accel, functions, candidate);
+        (*calls)++;
         if (found.type != intersection_type::bounding_box) return false;
         int3 cell = candidate.cell;
 

@@ -109,6 +109,17 @@ public final class Metal {
     public static native long runBatch(long batch);
 
     /*
+     * Indirect dispatches: the number of threadgroups of groupSize threads is read on the GPU from
+     * the buffer `indirect` at byteOffset (3 uints: x, y, z), as written by an earlier dispatch.
+     */
+    public static native void addDispatchIndirect(long batch, long pipeline, long[] buffers, long[] textures, int groupSize,
+                                                  long indirect, long byteOffset);
+
+    /** Like {@link #dispatch}, with the threadgroup count read from a buffer (see addDispatchIndirect). */
+    public static native long dispatchIndirect(long context, long pipeline, long[] buffers, long[] textures, int groupSize,
+                                               long indirect, long byteOffset);
+
+    /*
      * Hardware ray tracing of the world octree (kernel side: kernel/include/hwrt.h). Pipelines from
      * compileRt, block acceleration structures and function tables are passed to dispatch like
      * buffers, at the kernel's index of the acceleration structure and the function table.

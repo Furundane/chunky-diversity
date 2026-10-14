@@ -304,10 +304,16 @@ JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_replaceRegion
 
 // Binds buffers and textures at indices 0..n-1, in the order the kernel declares them, and encodes the dispatch.
 // Buffer handles may also be block acceleration structures and intersection function tables.
+// indirect: dispatch the number of threadgroups (of `threads` threads) stored in that buffer at
+// indirectOffset (MTLDispatchThreadgroupsIndirectArguments), instead of `threads` threads.
 static void encodeDispatch(JNIEnv *env, id<MTLComputeCommandEncoder> encoder, id pipelineObject,
-                           jlongArray bufferHandles, jlongArray textureHandles, jint threads) {
+                           jlongArray bufferHandles, jlongArray textureHandles, jint threads,
+                           id<MTLBuffer> indirect, jlong indirectOffset) {
     id<MTLComputePipelineState> pipeline = [pipelineObject isKindOfClass:[CMRtPipeline class]]
             ? ((CMRtPipeline *) pipelineObject).pipeline : pipelineObject;
+    // Make the writes of earlier dispatches in this encoder (path state, queues, and the indirect
+    // dispatch arguments written by wf_prepare) visible to this one.
+    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
     [encoder setComputePipelineState:pipeline];
 
     jsize count = (*env)->GetArrayLength(env, bufferHandles);
@@ -337,6 +343,12 @@ static void encodeDispatch(JNIEnv *env, id<MTLComputeCommandEncoder> encoder, id
     }
     (*env)->ReleaseLongArrayElements(env, textureHandles, handles, JNI_ABORT);
 
+    if (indirect != nil) {
+        [encoder dispatchThreadgroupsWithIndirectBuffer:indirect
+                                   indirectBufferOffset:(NSUInteger) indirectOffset
+                                  threadsPerThreadgroup:MTLSizeMake((NSUInteger) threads, 1, 1)];
+        return;
+    }
     // Apple GPUs support non-uniform threadgroups, so the grid need not be a multiple of the group size.
     NSUInteger groupSize = MIN(pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger) threads);
     [encoder dispatchThreads:MTLSizeMake((NSUInteger) threads, 1, 1)
@@ -387,7 +399,22 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_dispatch(JNI
         bool capture = startCapture(context.queue);
         id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        encodeDispatch(env, encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads);
+        encodeDispatch(env, encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads, nil, 0);
+        [encoder endEncoding];
+        return finish(env, commandBuffer, capture);
+    }
+}
+
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_dispatchIndirect(JNIEnv *env, jclass cls, jlong contextHandle,
+        jlong pipelineHandle, jlongArray bufferHandles, jlongArray textureHandles, jint groupSize,
+        jlong indirectHandle, jlong indirectOffset) {
+    @autoreleasepool {
+        CMContext *context = fromHandle(contextHandle);
+        bool capture = startCapture(context.queue);
+        id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+        encodeDispatch(env, encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, groupSize,
+                       fromHandle(indirectHandle), indirectOffset);
         [encoder endEncoding];
         return finish(env, commandBuffer, capture);
     }
@@ -420,8 +447,18 @@ JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_addDispatch(J
     @autoreleasepool {
         CMBatch *batch = fromHandle(batchHandle);
         if (threads > 0) {
-            encodeDispatch(env, batch.encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads);
+            encodeDispatch(env, batch.encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, threads, nil, 0);
         }
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_thatredox_chunkynative_metal_Metal_addDispatchIndirect(JNIEnv *env, jclass cls, jlong batchHandle,
+        jlong pipelineHandle, jlongArray bufferHandles, jlongArray textureHandles, jint groupSize,
+        jlong indirectHandle, jlong indirectOffset) {
+    @autoreleasepool {
+        CMBatch *batch = fromHandle(batchHandle);
+        encodeDispatch(env, batch.encoder, fromHandle(pipelineHandle), bufferHandles, textureHandles, groupSize,
+                       fromHandle(indirectHandle), indirectOffset);
     }
 }
 

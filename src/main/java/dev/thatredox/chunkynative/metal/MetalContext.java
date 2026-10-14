@@ -45,7 +45,8 @@ public class MetalContext {
     }
 
     /** Kernel functions of the wavefront render loop (kernel/include/wavefront.c), in this order. */
-    public static final String[] WAVEFRONT_FUNCTIONS = {"wf_generate", "wf_intersect", "wf_shade", "wf_shadow", "wf_finish"};
+    public static final String[] WAVEFRONT_FUNCTIONS = {
+            "wf_generate", "wf_intersect", "wf_shade", "wf_shadow", "wf_finish", "wf_prepare", "wf_prepareShadow"};
 
     /**
      * Whether the Metal renderer runs the wavefront render loop (several small kernels per bounce)

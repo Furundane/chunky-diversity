@@ -36,6 +36,9 @@ typedef struct {
     primitive_acceleration_structure hwAccel;
     intersection_function_table<> hwFunctions;
 #endif
+#ifdef CHUNKYCL_HWRT_STATS
+    __global uint* stats;
+#endif
 } Scene;
 
 // Sun sampling strategy flags, see SunSamplingStrategy in Chunky
@@ -85,7 +88,12 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
         }
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
 #elif defined(CHUNKYCL_HWRT)
-        hit |= HwRt_intersect(self.hwAccel, self.hwFunctions, self.octree, atlas, self.blockPalette, self.materialPalette, tempRay, &tempRecord, sample);
+        int hwCalls = 0;
+        hit |= HwRt_intersect(self.hwAccel, self.hwFunctions, self.octree, atlas, self.blockPalette, self.materialPalette, tempRay, &tempRecord, sample, &hwCalls);
+#ifdef CHUNKYCL_HWRT_STATS  // Diagnostic: world intersections and hardware calls (wavefront.c)
+        ATOMIC_ADD(self.stats, 1u);
+        ATOMIC_ADD(self.stats + 1, (uint) hwCalls);
+#endif
 #else
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
 #endif
