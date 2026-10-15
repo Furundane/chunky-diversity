@@ -70,7 +70,7 @@ tasks.register('metalBridge', Exec) {
     commandLine 'clang', '-fobjc-arc', '-dynamiclib', '-O2', '-Wall', '-Werror',
             '-arch', 'arm64', '-arch', 'x86_64', '-mmacosx-version-min=11.0',
             "-I${javaHome}/include", "-I${javaHome}/include/darwin", "-I${jniHeaderDir.get().asFile}",
-            '-framework', 'Foundation', '-framework', 'Metal',
+            '-framework', 'Foundation', '-framework', 'Metal', '-weak_framework', 'MetalFX',
             source.path, '-o', output.get().asFile.path
 }
 

@@ -3,6 +3,7 @@ package dev.thatredox.chunkynative.opencl;
 import dev.thatredox.chunkynative.metal.MetalContext;
 import dev.thatredox.chunkynative.metal.ui.MetalTab;
 import dev.thatredox.chunkynative.metal.renderer.MetalPathTracingRenderer;
+import dev.thatredox.chunkynative.metal.renderer.MetalDenoisedPreviewRenderer;
 import dev.thatredox.chunkynative.metal.renderer.MetalPreviewRenderer;
 import dev.thatredox.chunkynative.opencl.context.ContextManager;
 import dev.thatredox.chunkynative.opencl.renderer.ClSceneLoader;
@@ -55,6 +56,9 @@ public class ChunkyCl implements Plugin {
             // The kernel is compiled when the renderer is first used.
             Chunky.addRenderer(new MetalPathTracingRenderer());
             Chunky.addPreviewRenderer(new MetalPreviewRenderer());
+            if (MetalContext.macOsAtLeast(26)) {
+                Chunky.addPreviewRenderer(new MetalDenoisedPreviewRenderer());
+            }
         }
 
         RenderControlsTabTransformer prev = chunky.getRenderControlsTabTransformer();

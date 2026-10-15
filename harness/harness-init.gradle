@@ -50,6 +50,8 @@ rootProject {
         }
         p.tasks.register('runPreviewDebug', JavaExec) { t ->
             common(t, 'harness.PreviewDebug')
+            t.jvmArgs "-Dharness.previewMillis=${p.findProperty('previewMillis') ?: '4000'}"
+            if (p.hasProperty('previewArgs')) t.args p.property('previewArgs').toString().split(';')
         }
         // Chunky GUI with the plugin attached (ChunkyCl.main), using the harness Chunky home (-PchunkyHome).
         p.tasks.register('runChunky', JavaExec) { t ->

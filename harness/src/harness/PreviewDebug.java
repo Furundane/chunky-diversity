@@ -23,15 +23,27 @@ public class PreviewDebug {
     Chunky chunky = new Chunky(ChunkyOptions.getDefaults());
     new ChunkyCl().attach(chunky);
 
-    for (String id : new String[] {DefaultRenderManager.ChunkyPreviewID, "ChunkyClPreviewRenderer", "ChunkyMetalPreviewRenderer"}) {
-      Scene s = FeatureHarness.buildScene("PACKED", true);
+    // Optional args: scene directory, scene name, width, height, preview renderer ids (else the harness scene).
+    String[] ids = args.length > 4 ? java.util.Arrays.copyOfRange(args, 4, args.length)
+        : new String[] {DefaultRenderManager.ChunkyPreviewID, "ChunkyClPreviewRenderer", "ChunkyMetalPreviewRenderer", "ChunkyMetalDenoisedPreviewRenderer"};
+    for (String id : ids) {
+      Scene s;
+      if (args.length > 4) {
+        RenderContext ctx = new RenderContext(chunky);
+        ctx.setSceneDirectory(new File(args[0]));
+        s = new Scene();
+        s.loadScene(ctx, args[1], se.llbit.util.TaskTracker.NONE);
+        s.setCanvasSize(Integer.parseInt(args[2]), Integer.parseInt(args[3]));
+      } else {
+        s = FeatureHarness.buildScene("PACKED", true);
+      }
       s.setRenderMode(RenderMode.PREVIEW);
       s.setPreviewRenderer(id);
       s.setBufferFinalization(true); // previews only render while the canvas is visible
       DefaultRenderManager rm = new DefaultRenderManager(new RenderContext(chunky), true);
       rm.setSceneProvider(new FeatureHarness.FixedSceneProvider(s));
       rm.start();
-      Thread.sleep(4000);
+      Thread.sleep(Integer.getInteger("harness.previewMillis", 4000));
       int[] w = new int[1], h = new int[1];
       BufferedImage[] out = new BufferedImage[1];
       // Headless there is no canvas to trigger buffer swaps, so take whichever buffer holds the frame.

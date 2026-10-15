@@ -105,6 +105,16 @@ public class MetalContext {
         return instance;
     }
 
+    /** Whether this is macOS of at least the given major version. */
+    public static boolean macOsAtLeast(int major) {
+        if (!System.getProperty("os.name").toLowerCase().contains("mac")) return false;
+        try {
+            return Integer.parseInt(System.getProperty("os.version", "0").split("\\.")[0]) >= major;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     /** Whether the Metal backend can run here: macOS with the bridge library bundled. */
     public static boolean isSupported() {
         if (!System.getProperty("os.name").toLowerCase().contains("mac")) {

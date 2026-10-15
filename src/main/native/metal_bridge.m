@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #include <jni.h>
 #include <string.h>
 #include "dev_thatredox_chunkynative_metal_Metal.h"
@@ -862,5 +863,255 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_newFunctionT
         result.table = table;
         result.resources = resources;
         return toHandle(result);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Denoised preview (MetalDenoisedPreviewRenderer): MetalFX temporal denoised scaler, macOS 26.
+// The render kernel (CHUNKYCL_AOV) writes color and per-pixel inputs to buffers; denoise_pack turns
+// them into the scaler's textures (with device depth and motion vectors from the camera of this and
+// the previous frame), the scaler denoises and upscales, and denoise_unpack tone maps to ARGB.
+
+static NSString *const denoiseSource = @
+"#include <metal_stdlib>\n"
+"using namespace metal;\n"
+"// p: [0..14] camera (position, transform rows, aperture, subject distance, fov tan), [15..29] previous camera,\n"
+"// [30] input width, [31] input height, [32] full width, [33] full height, [34] crop x, [35] crop y (input pixels),\n"
+"// [36] near, [37] far, [38] has previous camera, [39] exposure, [40] tone mapping, [41] output width, [42] output height\n"
+"static float2 toPixel(constant float* cam, float3 d, bool sky, constant float* p, thread bool& ok) {\n"
+"    if (!sky) d -= float3(cam[0], cam[1], cam[2]);\n"
+"    float cx = cam[3] * d.x + cam[6] * d.y + cam[9] * d.z;\n"
+"    float cy = cam[4] * d.x + cam[7] * d.y + cam[10] * d.z;\n"
+"    float cz = cam[5] * d.x + cam[8] * d.y + cam[11] * d.z;\n"
+"    ok = cz > 1e-6f;\n"
+"    float halfWidth = p[32] / (2 * p[33]);\n"
+"    return float2((cx / cz / cam[14] + halfWidth) * p[33] - p[34], (cy / cz / cam[14] + 0.5f) * p[33] - p[35]);\n"
+"}\n"
+"kernel void denoise_pack(device const float* color [[buffer(0)]], device const float* aov [[buffer(1)]],\n"
+"        constant float* p [[buffer(2)]], device float* depth [[buffer(3)]],\n"
+"        texture2d<float, access::write> colorT [[texture(0)]], texture2d<float, access::write> motionT [[texture(1)]],\n"
+"        texture2d<float, access::write> normalT [[texture(2)]], texture2d<float, access::write> diffuseT [[texture(3)]],\n"
+"        texture2d<float, access::write> specularT [[texture(4)]], texture2d<float, access::write> roughnessT [[texture(5)]],\n"
+"        uint gid [[thread_position_in_grid]]) {\n"
+"    uint w = uint(p[30]);\n"
+"    if (gid >= w * uint(p[31])) return;\n"
+"    uint2 xy = uint2(gid % w, gid / w);\n"
+"    device const float* a = aov + gid * 16;\n"
+"    float z = a[3];\n"
+"    float n = p[36], f = p[37], zc = max(z, n);\n"
+"    depth[gid] = z <= 0 ? 1.0f : f * (zc - n) / ((f - n) * zc);\n"
+"    colorT.write(float4(color[gid * 3], color[gid * 3 + 1], color[gid * 3 + 2], 1), xy);\n"
+"    normalT.write(float4(a[4], a[5], a[6], 0), xy);\n"
+"    diffuseT.write(float4(a[7], a[8], a[9], 1), xy);\n"
+"    specularT.write(float4(a[10], a[11], a[12], 1), xy);\n"
+"    roughnessT.write(float4(a[13]), xy);\n"
+"    float2 motion = 0;\n"
+"    if (p[38] != 0) {\n"
+"        bool ok1, ok2;\n"
+"        float3 pos = float3(a[0], a[1], a[2]);\n"
+"        float2 now = toPixel(p, pos, z <= 0, p, ok1);\n"
+"        float2 before = toPixel(p + 15, pos, z <= 0, p, ok2);\n"
+"        if (ok1 && ok2) motion = before - now;\n"
+"    }\n"
+"    motionT.write(float4(motion, 0, 0), xy);\n"
+"}\n"
+"// Tone mapping like Chunky's post-processing filters: 0 gamma, 1 tonemap1, 2 ACES, 3 Hable, 4 none.\n"
+"kernel void denoise_unpack(texture2d<float, access::read> output [[texture(0)]], constant float* p [[buffer(0)]],\n"
+"        device uint* argb [[buffer(1)]], uint gid [[thread_position_in_grid]]) {\n"
+"    uint w = uint(p[41]);\n"
+"    if (gid >= w * uint(p[42])) return;\n"
+"    float3 c = max(output.read(uint2(gid % w, gid / w)).xyz, 0.0f) * p[39];\n"
+"    switch (int(p[40])) {\n"
+"        case 1:\n"
+"            c = max(0.0f, c - 0.004f);\n"
+"            c = (c * (6.2f * c + 0.5f)) / (c * (6.2f * c + 1.7f) + 0.06f);\n"
+"            break;\n"
+"        case 2:\n"
+"            c = clamp((c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f), 0.0f, 1.0f);\n"
+"            c = pow(c, 1 / 2.2f);\n"
+"            break;\n"
+"        case 3: {\n"
+"            c *= 16;\n"
+"            c = ((c * (0.15f * c + 0.05f) + 0.004f) / (c * (0.15f * c + 0.5f) + 0.06f)) - 0.02f / 0.3f;\n"
+"            float white = ((11.2f * (0.15f * 11.2f + 0.05f) + 0.004f) / (11.2f * (0.15f * 11.2f + 0.5f) + 0.06f)) - 0.02f / 0.3f;\n"
+"            c /= white;\n"
+"            break;\n"
+"        }\n"
+"        case 4:\n"
+"            break;\n"
+"        default:\n"
+"            c = pow(c, 1 / 2.2f);\n"
+"            break;\n"
+"    }\n"
+"    uint3 rgb = uint3(clamp(c * 255 + 0.5f, 0.0f, 255.0f));\n"
+"    argb[gid] = 0xFF000000u | (rgb.x << 16) | (rgb.y << 8) | rgb.z;\n"
+"}\n";
+
+API_AVAILABLE(macos(26.0))
+@interface CMDenoiser : NSObject
+@property(nonatomic, strong) id<MTLFXTemporalDenoisedScaler> scaler;
+@property(nonatomic, strong) id<MTLComputePipelineState> pack;
+@property(nonatomic, strong) id<MTLComputePipelineState> unpack;
+@property(nonatomic, strong) id<MTLTexture> color, depth, motion, normal, diffuse, specular, roughness, output, exposure;
+@property(nonatomic, strong) id<MTLBuffer> depthBuffer;
+@property(nonatomic) int inWidth, inHeight, outWidth, outHeight;
+@end
+
+@implementation CMDenoiser
+@end
+
+API_AVAILABLE(macos(26.0))
+static id<MTLTexture> denoiserTexture(id<MTLDevice> device, MTLPixelFormat format, MTLTextureUsage usage, int width, int height) {
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+            width:width height:height mipmapped:NO];
+    descriptor.usage = usage | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    descriptor.storageMode = MTLStorageModePrivate;
+    return [device newTextureWithDescriptor:descriptor];
+}
+
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_newDenoiser(JNIEnv *env, jclass cls, jlong contextHandle,
+        jint inWidth, jint inHeight, jint outWidth, jint outHeight) {
+    @autoreleasepool {
+        if (@available(macOS 26.0, *)) {
+            CMContext *context = fromHandle(contextHandle);
+            id<MTLDevice> device = context.device;
+            if (![MTLFXTemporalDenoisedScalerDescriptor supportsDevice:device]) return 0;
+            MTLFXTemporalDenoisedScalerDescriptor *descriptor = [MTLFXTemporalDenoisedScalerDescriptor new];
+            descriptor.colorTextureFormat = MTLPixelFormatRGBA16Float;
+            descriptor.depthTextureFormat = MTLPixelFormatDepth32Float;
+            descriptor.motionTextureFormat = MTLPixelFormatRG16Float;
+            descriptor.diffuseAlbedoTextureFormat = MTLPixelFormatRGBA16Float;
+            descriptor.specularAlbedoTextureFormat = MTLPixelFormatRGBA16Float;
+            descriptor.normalTextureFormat = MTLPixelFormatRGBA16Float;
+            descriptor.roughnessTextureFormat = MTLPixelFormatR16Float;
+            descriptor.outputTextureFormat = MTLPixelFormatRGBA16Float;
+            descriptor.inputWidth = inWidth;
+            descriptor.inputHeight = inHeight;
+            descriptor.outputWidth = outWidth;
+            descriptor.outputHeight = outHeight;
+            descriptor.requiresSynchronousInitialization = YES;
+            descriptor.autoExposureEnabled = NO;
+            id<MTLFXTemporalDenoisedScaler> scaler = [descriptor newTemporalDenoisedScalerWithDevice:device];
+            if (scaler == nil) return 0;
+
+            NSError *error = nil;
+            id<MTLLibrary> library = [device newLibraryWithSource:denoiseSource options:[MTLCompileOptions new] error:&error];
+            if (library == nil) {
+                throwRuntime(env, [@"Metal compile failed:\n" stringByAppendingString:error.localizedDescription]);
+                return 0;
+            }
+            CMDenoiser *denoiser = [CMDenoiser new];
+            denoiser.scaler = scaler;
+            denoiser.pack = [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"denoise_pack"] error:&error];
+            denoiser.unpack = [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"denoise_unpack"] error:&error];
+            if (denoiser.pack == nil || denoiser.unpack == nil) {
+                throwRuntime(env, [@"Pipeline creation failed: " stringByAppendingString:error.localizedDescription]);
+                return 0;
+            }
+            denoiser.inWidth = inWidth;
+            denoiser.inHeight = inHeight;
+            denoiser.outWidth = outWidth;
+            denoiser.outHeight = outHeight;
+            denoiser.color = denoiserTexture(device, MTLPixelFormatRGBA16Float, scaler.colorTextureUsage, inWidth, inHeight);
+            denoiser.depth = denoiserTexture(device, MTLPixelFormatDepth32Float, scaler.depthTextureUsage, inWidth, inHeight);
+            denoiser.motion = denoiserTexture(device, MTLPixelFormatRG16Float, scaler.motionTextureUsage, inWidth, inHeight);
+            denoiser.normal = denoiserTexture(device, MTLPixelFormatRGBA16Float, scaler.normalTextureUsage, inWidth, inHeight);
+            denoiser.diffuse = denoiserTexture(device, MTLPixelFormatRGBA16Float, scaler.diffuseAlbedoTextureUsage, inWidth, inHeight);
+            denoiser.specular = denoiserTexture(device, MTLPixelFormatRGBA16Float, scaler.specularAlbedoTextureUsage, inWidth, inHeight);
+            denoiser.roughness = denoiserTexture(device, MTLPixelFormatR16Float, scaler.roughnessTextureUsage, inWidth, inHeight);
+            denoiser.output = denoiserTexture(device, MTLPixelFormatRGBA16Float, scaler.outputTextureUsage, outWidth, outHeight);
+            denoiser.exposure = denoiserTexture(device, MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1);
+            denoiser.depthBuffer = [device newBufferWithLength:(NSUInteger) inWidth * inHeight * 4 options:MTLResourceStorageModePrivate];
+
+            // Exposure 1: the color input is the scene's linear radiance; exposure is applied when tone mapping.
+            __fp16 one = 1;
+            id<MTLBuffer> exposure = [device newBufferWithBytes:&one length:sizeof(one) options:MTLResourceStorageModeShared];
+            id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+            [blit copyFromBuffer:exposure sourceOffset:0 sourceBytesPerRow:2 sourceBytesPerImage:2 sourceSize:MTLSizeMake(1, 1, 1)
+                       toTexture:denoiser.exposure destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+            [commandBuffer commit];
+            [commandBuffer waitUntilCompleted];
+            return toHandle(denoiser);
+        }
+        return 0;
+    }
+}
+
+static void dispatch1D(id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline, NSUInteger threads) {
+    NSUInteger group = MIN(pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger) 256);
+    [encoder dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+}
+
+// One frame: color and aov buffers (render kernel with CHUNKYCL_AOV, input size) to ARGB (output size).
+// params: see denoiseSource; scalerParams: jitter x, y, reset history, world-to-view, view-to-clip
+// (column-major). Returns the GPU time in nanoseconds.
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_denoise(JNIEnv *env, jclass cls, jlong contextHandle,
+        jlong denoiserHandle, jlong colorHandle, jlong aovHandle, jlong argbHandle, jfloatArray params, jfloatArray scalerParams) {
+    @autoreleasepool {
+        if (@available(macOS 26.0, *)) {
+            CMContext *context = fromHandle(contextHandle);
+            CMDenoiser *denoiser = fromHandle(denoiserHandle);
+            float p[43], q[35];
+            (*env)->GetFloatArrayRegion(env, params, 0, 43, p);
+            (*env)->GetFloatArrayRegion(env, scalerParams, 0, 35, q);
+            NSUInteger inPixels = (NSUInteger) denoiser.inWidth * denoiser.inHeight;
+
+            id<MTLCommandBuffer> commandBuffer = [context.queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+            [encoder setComputePipelineState:denoiser.pack];
+            [encoder setBuffer:fromHandle(colorHandle) offset:0 atIndex:0];
+            [encoder setBuffer:fromHandle(aovHandle) offset:0 atIndex:1];
+            [encoder setBytes:p length:sizeof(p) atIndex:2];
+            [encoder setBuffer:denoiser.depthBuffer offset:0 atIndex:3];
+            NSArray<id<MTLTexture>> *inputs = @[denoiser.color, denoiser.motion, denoiser.normal, denoiser.diffuse,
+                                                denoiser.specular, denoiser.roughness];
+            for (NSUInteger i = 0; i < inputs.count; i++) [encoder setTexture:inputs[i] atIndex:i];
+            dispatch1D(encoder, denoiser.pack, inPixels);
+            [encoder endEncoding];
+
+            id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+            [blit copyFromBuffer:denoiser.depthBuffer sourceOffset:0 sourceBytesPerRow:denoiser.inWidth * 4
+                 sourceBytesPerImage:inPixels * 4 sourceSize:MTLSizeMake(denoiser.inWidth, denoiser.inHeight, 1)
+                           toTexture:denoiser.depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+
+            id<MTLFXTemporalDenoisedScaler> scaler = denoiser.scaler;
+            scaler.colorTexture = denoiser.color;
+            scaler.depthTexture = denoiser.depth;
+            scaler.motionTexture = denoiser.motion;
+            scaler.normalTexture = denoiser.normal;
+            scaler.diffuseAlbedoTexture = denoiser.diffuse;
+            scaler.specularAlbedoTexture = denoiser.specular;
+            scaler.roughnessTexture = denoiser.roughness;
+            scaler.outputTexture = denoiser.output;
+            scaler.exposureTexture = denoiser.exposure;
+            scaler.jitterOffsetX = q[0];
+            scaler.jitterOffsetY = q[1];
+            scaler.shouldResetHistory = q[2] != 0;
+            scaler.motionVectorScaleX = 1;
+            scaler.motionVectorScaleY = 1;
+            scaler.depthReversed = NO;
+            simd_float4x4 worldToView, viewToClip;
+            for (int c = 0; c < 4; c++) {
+                worldToView.columns[c] = simd_make_float4(q[3 + c * 4], q[4 + c * 4], q[5 + c * 4], q[6 + c * 4]);
+                viewToClip.columns[c] = simd_make_float4(q[19 + c * 4], q[20 + c * 4], q[21 + c * 4], q[22 + c * 4]);
+            }
+            scaler.worldToViewMatrix = worldToView;
+            scaler.viewToClipMatrix = viewToClip;
+            [scaler encodeToCommandBuffer:commandBuffer];
+
+            encoder = [commandBuffer computeCommandEncoder];
+            [encoder setComputePipelineState:denoiser.unpack];
+            [encoder setTexture:denoiser.output atIndex:0];
+            [encoder setBytes:p length:sizeof(p) atIndex:0];
+            [encoder setBuffer:fromHandle(argbHandle) offset:0 atIndex:1];
+            dispatch1D(encoder, denoiser.unpack, (NSUInteger) denoiser.outWidth * denoiser.outHeight);
+            [encoder endEncoding];
+            return finish(env, commandBuffer, false);
+        }
+        throwRuntime(env, @"The denoiser needs macOS 26");
+        return 0;
     }
 }

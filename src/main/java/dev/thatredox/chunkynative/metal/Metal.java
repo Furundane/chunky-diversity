@@ -165,4 +165,18 @@ public final class Metal {
     public static native long retain(long handle);
 
     public static native void release(long handle);
+
+    /**
+     * A MetalFX temporal denoised scaler (macOS 26) from an input to an output size, with the textures
+     * and kernels around it (see {@link #denoise}); 0 if MetalFX can't do this here. Freed with {@link #release}.
+     */
+    public static native long newDenoiser(long context, int inWidth, int inHeight, int outWidth, int outHeight);
+
+    /**
+     * Denoises and upscales one frame of the render kernel compiled with CHUNKYCL_AOV (color and aov
+     * buffers at the input size) into ARGB pixels at the output size. params: the layout in
+     * metal_bridge.m (denoiseSource); scalerParams: jitter x, y, reset history (0/1), world-to-view and
+     * view-to-clip matrices (column-major). Returns the GPU time in nanoseconds.
+     */
+    public static native long denoise(long context, long denoiser, long color, long aov, long argb, float[] params, float[] scalerParams);
 }
