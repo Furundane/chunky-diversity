@@ -66,8 +66,9 @@ Material Material_cloud() {
 
 // The part of closestIntersect after the world octree: entities, clouds and water, within the
 // distance of the world octree hit (hit: whether there is one, in record). tempRay is the ray from
-// where this intersection starts; ray decides how water is treated.
-bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, Ray ray, bool hit,
+// where this intersection starts; ray decides how water is treated. enterWater: test rays outside
+// water against the water octree (the wavefront kernels can do that with hardware ray tracing).
+bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, Ray ray, bool hit, bool enterWater,
                                __private IntersectionRecord* record, __private MaterialSample* sample) {
 #ifndef CHUNKYCL_DIAG_NO_BVH  // Diagnostic: leave out the entities (timing only)
     hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, record, sample);
@@ -99,7 +100,7 @@ bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, R
 #ifndef CHUNKYCL_DIAG_NO_WATER  // Diagnostic: leave out the water octree (timing only)
     if (ray.flags & RAY_WATER) {
         hit |= Octree_exitWater(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
-    } else {
+    } else if (enterWater) {
         hit |= Octree_octreeIntersect(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
     }
 #endif
@@ -146,7 +147,7 @@ bool closestIntersect(Scene self, image2d_array_t atlas, Ray ray, __private Inte
 #else
         hit |= Octree_octreeIntersect(self.octree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, &tempRecord, sample);
 #endif
-        hit = Scene_intersectAfterWorld(self, atlas, tempRay, ray, hit, &tempRecord, sample);
+        hit = Scene_intersectAfterWorld(self, atlas, tempRay, ray, hit, true, &tempRecord, sample);
 
         if (!hit) {
             return false;

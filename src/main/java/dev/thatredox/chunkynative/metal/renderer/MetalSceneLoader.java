@@ -44,6 +44,12 @@ public class MetalSceneLoader extends AbstractSceneLoader {
     private BlockAcceleration blockAccelMode = null;
     private MetalBuffer blockAccelOctree = null;
     private ResourcePalette<PackedBlock> blockAccelPalette = null;
+    private int waterDepth;
+    // The same for the water octree (wavefront renderer only)
+    private long waterAccel = 0;
+    private BlockAcceleration waterAccelMode = null;
+    private MetalBuffer waterAccelOctree = null;
+    private ResourcePalette<PackedBlock> waterAccelPalette = null;
     private static volatile String accelerationStatus = "";
     private static volatile Consumer<String> statusListener = null;
 
@@ -90,10 +96,12 @@ public class MetalSceneLoader extends AbstractSceneLoader {
 
     @Override
     protected boolean loadWaterOctree(int[] octree, int length, int depth, int[] blockMapping, ResourcePalette<PackedBlock> blockPalette) {
+        releaseWaterAcceleration();
         if (waterOctreeData != null) waterOctreeData.close();
         if (waterOctreeDepth != null) waterOctreeDepth.close();
         waterOctreeData = uploadOctree(octree, length, blockMapping);
         waterOctreeDepth = MetalBuffer.ofInts(context, octreeHeader(octree, length, depth, blockMapping));
+        waterDepth = depth;
         return true;
     }
 
@@ -168,6 +176,42 @@ public class MetalSceneLoader extends AbstractSceneLoader {
             Log.warn("ChunkyCL Metal: could not use ray tracing hardware: " + e.getMessage());
         }
         return blockAccel;
+    }
+
+    /**
+     * Like {@link #blockAcceleration}, for the water octree: 0 when the setting is off or there is
+     * no water (or the structure can't be built). Used by the wavefront renderer.
+     */
+    public synchronized long waterAcceleration() {
+        BlockAcceleration mode = BlockAcceleration.current();
+        if (mode == waterAccelMode && waterOctreeData == waterAccelOctree && blockPalette == waterAccelPalette) {
+            return waterAccel;
+        }
+        releaseWaterAcceleration();
+        waterAccelMode = mode;
+        waterAccelOctree = waterOctreeData;
+        waterAccelPalette = blockPalette;
+        if (mode == BlockAcceleration.OFF || waterOctreeData == null) {
+            return 0;
+        }
+        try {
+            waterAccel = Metal.buildBlockAccel(context, waterOctreeData.handle, waterDepth, getBlockPalette().handle, mode.sectionShift, 0);
+            long[] info = Metal.blockAccelInfo(waterAccel);
+            Log.infof("ChunkyCL Metal: water: %,d boxes, %.0f MB, built in %.1f s", info[0], (info[1] + info[2]) / 1e6, info[3] / 1e9);
+        } catch (RuntimeException e) {
+            // E.g. no water
+            waterAccel = 0;
+            Log.info("ChunkyCL Metal: water octree traced with the octree march: " + e.getMessage());
+        }
+        return waterAccel;
+    }
+
+    private synchronized void releaseWaterAcceleration() {
+        Metal.release(waterAccel);
+        waterAccel = 0;
+        waterAccelMode = null;
+        waterAccelOctree = null;
+        waterAccelPalette = null;
     }
 
     private synchronized void releaseBlockAcceleration() {

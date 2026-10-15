@@ -23,7 +23,8 @@
 #include "water.h"
 
 // Path state, STATE_F floats in stateF and STATE_I ints in stateI per path of the wave, stored by
-// field (field k of path p at k * wave[3] + p) so that neighboring paths read neighboring memory:
+// field (field k of path p at k * wave[3] + p) so that neighboring paths read neighboring memory.
+// Both are in the buffer `state`, the ints after the floats (see WF_BUFFERS):
 //   path   (floats 0..11):  origin (3), direction (3), color (3), throughput (3)
 //          (ints 0..3):     ray material, ray flags, random state, alive
 //   hit    (floats 12..25): distance, normal (3), texCoord (2), sample color (4), emittance, specular,
@@ -55,6 +56,16 @@
 #define CONTROL_STATS 12
 #define CONTROL_TRACE 16
 #define CONTROL_TRACE_ARGS 20
+#define CONTROL_SIZE 32
+
+// The path state and the control block and queues share two buffers (state, work), since Metal
+// takes at most 31 buffer arguments. Every kernel starts with this.
+#define WF_BUFFERS \
+    __global float* stateF = state; \
+    __global int* stateI = (__global int*) (state + STATE_F * wave[3]); \
+    __global uint* control = work; \
+    __global uint* queues = work + CONTROL_SIZE; \
+    (void) stateF; (void) stateI; (void) control; (void) queues
 // Threadgroup size of the indirect dispatches (WavefrontJob.GROUP_SIZE).
 #define WF_GROUP 64
 
@@ -68,6 +79,13 @@
 #define WF_HWRT_PARAMS
 #define WF_HWRT_SCENE(scene)
 #define WF_NO_HWRT(scene)
+#endif
+
+// The water octree with hardware ray tracing too (CHUNKYCL_HWRT_WATER, see wf_traceWater).
+#ifdef CHUNKYCL_HWRT_WATER
+#define WF_HWRT_WATER_PARAMS primitive_acceleration_structure hwWaterAccel, intersection_function_table<> hwWaterFunctions,
+#else
+#define WF_HWRT_WATER_PARAMS
 #endif
 
 #ifdef CHUNKYCL_HWRT_STATS
@@ -87,6 +105,7 @@
     WF_HWRT_PARAMS \
     __global const int* waterOctreeDepth, /* depth and bounds of the water, see Octree_createWithContent */ \
     __global const int* waterOctreeData, \
+    WF_HWRT_WATER_PARAMS \
     __global const int* bPalette, \
     __global const int* quadModels, \
     __global const int* aabbModels, \
@@ -105,10 +124,8 @@
     __global const int* canvasConfig, \
     __global const int* rayDepth, \
     __global float* res, \
-    __global float* stateF, \
-    __global int* stateI, \
-    __global uint* queues, \
-    __global uint* control, \
+    __global float* state, \
+    __global uint* work, \
     __global const int* wave
 
 // The Scene of the render kernel. A macro, since the palettes keep pointers into the struct.
@@ -230,6 +247,7 @@ void WF_requestSunLight(Scene self, Sun sun, Ray ray, IntersectionRecord record,
 }
 
 __kernel void wf_generate(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = GLOBAL_ID;
     if (p >= wave[1]) return;
     int gid = wave[0] + p;
@@ -259,6 +277,7 @@ __kernel void wf_generate(WF_PARAMS KERNEL_GID_PARAM) {
 // Indirect dispatch size for the input queue of this bounce; empties the output and shadow queues.
 // One thread.
 __kernel void wf_prepare(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     if (GLOBAL_ID != 0) return;
     int in = wave[4];
     control[CONTROL_ARGS] = (control[in] + WF_GROUP - 1) / WF_GROUP;
@@ -271,6 +290,7 @@ __kernel void wf_prepare(WF_PARAMS KERNEL_GID_PARAM) {
 
 // Indirect dispatch size for the shadow queue. One thread.
 __kernel void wf_prepareShadow(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     if (GLOBAL_ID != 0) return;
     control[CONTROL_SHADOW_ARGS] = (control[QUEUE_SHADOW] + WF_GROUP - 1) / WF_GROUP;
     control[CONTROL_SHADOW_ARGS + 1] = 1;
@@ -287,6 +307,7 @@ int WF_queued(__global const uint* queues, __global const uint* control, __globa
 // queued path's ray, the minimal kernel a split of wf_intersect would run. Its result is written to
 // the hit distance, which wf_intersect overwrites.
 __kernel void wf_traceProbe(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
 #ifdef CHUNKYCL_HWRT
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
@@ -309,6 +330,7 @@ __kernel void wf_traceProbe(WF_PARAMS KERNEL_GID_PARAM) {
 
 // Russian roulette (as in wf_intersect), then starts the world octree trace of the surviving paths.
 __kernel void wf_begin(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
 #ifdef CHUNKYCL_HWRT
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
@@ -342,6 +364,7 @@ __kernel void wf_begin(WF_PARAMS KERNEL_GID_PARAM) {
 // Indirect dispatch size for the input trace queue of this round; empties the output trace queue.
 // One thread.
 __kernel void wf_prepareTrace(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     if (GLOBAL_ID != 0) return;
     int in = wave[5];
     control[CONTROL_TRACE_ARGS] = (control[CONTROL_TRACE + in] + WF_GROUP - 1) / WF_GROUP;
@@ -358,6 +381,7 @@ int WF_queuedTrace(__global const uint* queues, __global const uint* control, __
 
 // The hardware query for the next block of each queued trace.
 __kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
 #ifdef CHUNKYCL_HWRT
     int p = WF_queuedTrace(queues, control, wave, GLOBAL_ID);
     if (p < 0) return;
@@ -389,6 +413,7 @@ __kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
 // without another hardware query. A hit is stored as the world octree hit; a path that found
 // nothing in those leaves goes to the next round's queue.
 __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
 #ifdef CHUNKYCL_HWRT
     int p = WF_queuedTrace(queues, control, wave, GLOBAL_ID);
     if (p < 0) return;
@@ -433,6 +458,7 @@ __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
 // Alternative to the rounds (-Dchunkymetal.traceMode=fused): the whole world octree trace with
 // hardware ray tracing in one small kernel (after wf_begin), then wf_intersectRest.
 __kernel void wf_world(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
 #ifdef CHUNKYCL_HWRT
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
@@ -453,6 +479,7 @@ __kernel void wf_world(WF_PARAMS KERNEL_GID_PARAM) {
 
 // The rest of the intersection after the world octree (entities, clouds, water), like closestIntersect.
 __kernel void wf_intersectRest(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
@@ -464,12 +491,67 @@ __kernel void wf_intersectRest(WF_PARAMS KERNEL_GID_PARAM) {
     MaterialSample sample;
     bool hit = WF_I(s, HIT_I) != 0;
     if (hit) WF_loadHit(s, &record, &sample);
-    hit = Scene_intersectAfterWorld(scene, textureAtlas, ray, ray, hit, &record, &sample);
+#ifdef CHUNKYCL_HWRT_WATER
+    bool enterWater = false;  // wf_traceWater and wf_resolveWater
+#else
+    bool enterWater = true;
+#endif
+    hit = Scene_intersectAfterWorld(scene, textureAtlas, ray, ray, hit, enterWater, &record, &sample);
     WF_storeHit(s, hit, record, sample);
+}
+
+// The hardware query for the first water block along the ray of each queued path outside water,
+// closer than what wf_intersectRest found (CHUNKYCL_HWRT_WATER).
+__kernel void wf_traceWater(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
+#ifdef CHUNKYCL_HWRT_WATER
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    WF_I(s, TRACE_I + 9) = 0;
+    if (!WF_I(s, 3) || (WF_I(s, 1) & RAY_WATER)) return;
+    float maxDistance = WF_I(s, HIT_I) ? WF_F(s, HIT_F) : HUGE_VALF;
+    HwRtCandidate candidate;
+    float distance;
+    if (HwRt_query(hwWaterAccel, hwWaterFunctions, WF_loadRay(s), 0.0f, maxDistance, &candidate, &distance)) {
+        WF_I(s, TRACE_I + 9) = 1;
+        WF_F(s, TRACE_F + 1) = distance;
+    }
+#endif
+}
+
+// The water octree march (as in closestIntersect) from the water block found by wf_traceWater.
+__kernel void wf_resolveWater(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
+#ifdef CHUNKYCL_HWRT_WATER
+    int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    if (!WF_I(s, 3) || !WF_I(s, TRACE_I + 9)) return;
+    WF_SCENE(scene);
+    WF_NO_HWRT(scene);
+    Ray ray = WF_loadRay(s);
+    IntersectionRecord record = IntersectionRecord_new();
+    record.medium = ray.material;
+    MaterialSample sample;
+    bool hit = WF_I(s, HIT_I) != 0;
+    if (hit) WF_loadHit(s, &record, &sample);
+
+    float distance = WF_F(s, TRACE_F + 1);
+    float3 ad = fabs(ray.origin);
+    float eps = fmax(OFFSET, fmax(fmax(ad.x, ad.y), ad.z) * 4.8e-7f + distance * 4.8e-7f);
+    // The march from the ray origin would have passed air before reaching this block.
+    int current = distance > eps ? 0 : ray.material;
+    if (Octree_march(scene.waterOctree, textureAtlas, scene.blockPalette, scene.materialPalette, 256, HUGE_VALF,
+                     ray, &record, &sample, &distance, &current) == MARCH_HIT) {
+        WF_storeHit(s, true, record, sample);
+    }
+#endif
 }
 
 // Russian roulette, then the closest intersection of the path's ray.
 __kernel void wf_intersect(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
@@ -502,6 +584,7 @@ __kernel void wf_intersect(WF_PARAMS KERNEL_GID_PARAM) {
 
 // Everything the render kernel does with an intersection, except the shadow ray of sun sampling.
 __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = WF_queued(queues, control, wave, wave[4], GLOBAL_ID);
     if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
@@ -608,6 +691,7 @@ __kernel void wf_shade(WF_PARAMS KERNEL_GID_PARAM) {
 
 // The sun light requested by wf_shade, through translucent blocks and water to the sun.
 __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = WF_queued(queues, control, wave, QUEUE_SHADOW, GLOBAL_ID);
     if (p < 0) return;
     PathState s = WF_path(stateF, stateI, wave, p);
@@ -629,6 +713,7 @@ __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
 
 // Adds the paths' light to the pass buffer (the running average over the samples so far).
 __kernel void wf_finish(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
     int p = GLOBAL_ID;
     if (p >= wave[1]) return;
     int gid = wave[0] + p;
