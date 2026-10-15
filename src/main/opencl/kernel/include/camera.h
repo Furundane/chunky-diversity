@@ -60,8 +60,16 @@ Ray ray_to_camera(
 
         float halfWidth = fullWidth / (2.0 * fullHeight);
         float invHeight = 1.0 / fullHeight;
-        float x = -halfWidth + ((gid % width) + Random_nextFloat(random) + cropX) * invHeight;
-        float y = -0.5 + ((gid / width) + Random_nextFloat(random) + cropY) * invHeight;
+#ifdef CHUNKYCL_AOV
+        // Experiment (denoiser inputs): one subpixel offset for the whole frame, after the pinhole settings.
+        float jitterX = cameraSettings[15];
+        float jitterY = cameraSettings[16];
+#else
+        float jitterX = Random_nextFloat(random);
+        float jitterY = Random_nextFloat(random);
+#endif
+        float x = -halfWidth + ((gid % width) + jitterX + cropX) * invHeight;
+        float y = -0.5 + ((gid / width) + jitterY + cropY) * invHeight;
 
         switch (*projectorType) {
             case 0:

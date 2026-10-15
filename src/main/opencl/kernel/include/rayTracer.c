@@ -10,6 +10,67 @@
 #include "sky.h"
 #include "water.h"
 
+#ifdef CHUNKYCL_AOV
+void Aov_write(__global float* aov, int gid, float3 position, float viewDepth, float3 normal,
+               float3 diffuse, float3 specular, float roughness) {
+    __global float* p = aov + gid * 16;
+    p[0] = position.x; p[1] = position.y; p[2] = position.z;
+    p[3] = viewDepth;
+    p[4] = normal.x; p[5] = normal.y; p[6] = normal.z;
+    p[7] = diffuse.x; p[8] = diffuse.y; p[9] = diffuse.z;
+    p[10] = specular.x; p[11] = specular.y; p[12] = specular.z;
+    p[13] = roughness;
+    p[14] = 0; p[15] = 0;
+}
+
+void Aov_storeSky(__global float* aov, int gid, Ray ray, float3 tint) {
+    Aov_write(aov, gid, ray.direction, 0, -ray.direction, tint, (float3) (0), 1);
+}
+
+void Aov_store(__global float* aov, int gid, Scene scene, image2d_array_t atlas, __global const float* cameraSettings,
+               Ray ray, IntersectionRecord record, MaterialSample sample) {
+    float3 tint = (float3) (1);
+#ifdef CHUNKYCL_AOV_THROUGH
+    // Mostly see-through surfaces (glass): describe the surface behind them, tinted by the glass.
+    for (int layer = 0; layer < 4; layer++) {
+        if ((record.flags & HIT_WATER) || sample.color.w >= 0.5f || sample.specular + sample.metalness > 0) break;
+        tint *= Material_transmission(sample.color.xyz, sample.color.w, scene.water.fancierTranslucency, scene.water.transmissivityCap);
+        ray.origin = ray.origin + ray.direction * (record.distance + OFFSET);
+        ray.material = record.block;
+        IntersectionRecord next = IntersectionRecord_new();
+        MaterialSample nextSample;
+        Material nextMaterial;
+        if (!closestIntersect(scene, atlas, ray, &next, &nextSample, &nextMaterial)) {
+            Aov_storeSky(aov, gid, ray, tint);
+            return;
+        }
+        record = next;
+        sample = nextSample;
+    }
+#endif
+    float3 hitPoint = ray.origin + ray.direction * record.distance;
+    float3 forward = make_float3(cameraSettings[5], cameraSettings[8], cameraSettings[11]);
+    float viewDepth = dot(hitPoint - vload3(0, cameraSettings), forward);
+    float3 normal = record.normal;
+    if (dot(normal, ray.direction) > 0) normal = -normal;
+    float3 diffuse, specular;
+    float roughness;
+    if (record.flags & HIT_WATER) {
+        diffuse = Water_color(scene.water, sample);
+        specular = (float3) (0.02f);
+        roughness = 0;
+    } else {
+        float3 color = sample.color.xyz;
+        float spec = sample.specular;
+        float metal = sample.metalness;
+        diffuse = color * sample.color.w * (1 - metal) * (1 - spec);
+        specular = mix((float3) (spec), color, metal);
+        roughness = spec + metal > 0 ? sample.roughness : 1;
+    }
+    Aov_write(aov, gid, hitPoint, viewDepth, normal, diffuse * tint, specular * tint, roughness);
+}
+#endif
+
 __kernel void render(
     __global const int* projectorType,
     __global const float* cameraSettings,
@@ -45,6 +106,11 @@ __kernel void render(
     __global const int* canvasConfig,
     __global const int* rayDepth,
     __global float* res
+#ifdef CHUNKYCL_AOV
+    // Experiment (denoiser inputs), 16 floats per pixel from the camera ray's first hit: world position,
+    // view depth (0 for the sky), normal facing the camera, diffuse albedo, specular albedo, roughness.
+    , __global float* aov
+#endif
     KERNEL_GID_PARAM
 ) {
     int gid = GLOBAL_ID;
@@ -103,6 +169,9 @@ __kernel void render(
         Material material;
 
         if (closestIntersect(scene, textureAtlas, ray, &record, &sample, &material)) {
+#ifdef CHUNKYCL_AOV
+            if (depth == 0) Aov_store(aov, gid, scene, textureAtlas, cameraSettings, ray, record, sample);
+#endif
 #ifdef CHUNKYCL_FOG  // Only compiled in when the scene has fog (see AtmosphereData.kernelDefines)
             // Fog over the segment to this surface, if it went through air or water (like PathTracer)
             if (ray.material == 0) {
@@ -170,6 +239,9 @@ __kernel void render(
                 ray.flags |= RAY_INDIRECT;
             }
         } else {
+#ifdef CHUNKYCL_AOV
+            if (depth == 0) Aov_storeSky(aov, gid, ray, (float3) (1));
+#endif
             // Like Sky.getSkyColorInterpolated / getSkyColor in Chunky: camera rays see the apparent sky light.
             float skyMultiplier = depth == 0 ? skyLight[1] : skyLight[0];
             intersectSky(skyTexture, skyMultiplier, sun, textureAtlas, ray, Scene_sunMode(scene, ray), &sample);

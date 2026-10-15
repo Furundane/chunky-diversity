@@ -42,6 +42,12 @@ rootProject {
             common(t, 'harness.NoiseRender')
             t.args((p.findProperty('noiseArgs') ?: '').toString().split(';'))
         }
+        // Experiment: MetalFX denoiser (harness/metalfx/build.sh first). -PdenoiseArgs=dir;scene;w;h;refSpp;frames;out;jitter;strafe
+        p.tasks.register('runDenoise', JavaExec) { t ->
+            common(t, 'harness.DenoiseExperiment')
+            t.jvmArgs "-Dharness.metalfxLib=${new File(p.buildDir, 'metalfx/libmetalfxdenoiser.dylib').path}"
+            t.args((p.findProperty('denoiseArgs') ?: '').toString().split(';'))
+        }
         p.tasks.register('runPreviewDebug', JavaExec) { t ->
             common(t, 'harness.PreviewDebug')
         }
