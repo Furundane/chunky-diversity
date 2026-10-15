@@ -23,6 +23,7 @@ typedef struct {
     int3 cell;
     int data;        // Packed block if known (octree leaves), 0 to look it up in the octree (sections)
     float leafExit;  // Distance at which the ray leaves the octree leaf (leaves only)
+    int calls;       // Intersection function calls of the query (statistics)
 } HwRtCandidate;
 
 struct HwRtHit {
@@ -50,6 +51,7 @@ HwRtHit HwRt_firstBlock(float3 origin [[origin]],
     HwRtHit result;
     result.accept = false;
     result.distance = 0;
+    candidate.calls++;
 
     float3 lo = float3(boxes[prim * 6], boxes[prim * 6 + 1], boxes[prim * 6 + 2]);
     float3 hi = float3(boxes[prim * 6 + 3], boxes[prim * 6 + 4], boxes[prim * 6 + 5]);
@@ -141,8 +143,10 @@ bool HwRt_query(primitive_acceleration_structure accel, intersection_function_ta
     intersector<> isect;
     isect.assume_geometry_type(geometry_type::bounding_box);
     HwRtCandidate found;
+    found.calls = 0;
     metal::raytracing::ray r(ray.origin, ray.direction, start, maxDistance);
     intersection_result<> result = isect.intersect(r, accel, functions, found);
+    candidate->calls = found.calls;
     if (result.type != intersection_type::bounding_box) return false;
     *candidate = found;
     *distance = result.distance;

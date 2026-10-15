@@ -449,6 +449,9 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                 long intersections = counters[12] & 0xFFFFFFFFL, calls = counters[13] & 0xFFFFFFFFL;
                 System.out.printf(java.util.Locale.ROOT, "METAL_HWRT_STATS worldIntersections=%d hardwareCalls=%d callsPerIntersection=%.3f%n",
                         intersections, calls, intersections == 0 ? 0.0 : (double) calls / intersections);
+                long queries = counters[14] & 0xFFFFFFFFL, functionCalls = counters[15] & 0xFFFFFFFFL;
+                System.out.printf(java.util.Locale.ROOT, "METAL_HWRT_STATS queries=%d intersectionFunctionCalls=%d callsPerQuery=%.2f%n",
+                        queries, functionCalls, queries == 0 ? 0.0 : (double) functionCalls / queries);
             }
             state.close();
             work.close();

@@ -390,6 +390,11 @@ __kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
     float distance;
     WF_I(s, TRACE_I + 4) += 1;
     bool found = HwRt_query(hwAccel, hwFunctions, WF_loadRay(s), WF_F(s, TRACE_F), HUGE_VALF, &candidate, &distance);
+#ifdef CHUNKYCL_HWRT_STATS
+    // [14] hardware queries, [15] intersection function calls they made
+    ATOMIC_ADD(control + CONTROL_STATS + 2, 1u);
+    ATOMIC_ADD(control + CONTROL_STATS + 3, (uint) candidate.calls);
+#endif
     WF_I(s, TRACE_I + 9) = found ? 1 : 0;
     if (!found) {
 #ifdef CHUNKYCL_HWRT_STATS
