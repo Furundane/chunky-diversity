@@ -43,16 +43,41 @@ The previews show the scene without fog and waves.
 
 On macOS, use the Metal renderer **and** the Metal preview; mixing them uploads the scene twice.
 
+## Metal renderer options
+
+The `Metal` tab (macOS) sets how the Metal renderer works. The settings are saved; changing one restarts
+the render. All options give the same image.
+
+| Option | Choices |
+|---|---|
+| Render loop | **Wavefront** (default): small kernels per bounce that only run for the paths still alive. Single kernel: the whole path in one kernel, as the OpenCL renderer. |
+| Block tracing | **Octree** (default): the octree march shared with OpenCL. Ray tracing, 8x8x8 sections / 4x4x4 sections / octree leaves: Metal hardware ray tracing over boxes of blocks. |
+| Also trace water with ray tracing hardware | Off by default, experimental (wavefront only). |
+
+Ray tracing hardware (Apple M3 and newer) finds blocks faster than the octree in large worlds, and is
+slower in small scenes. Smaller boxes are faster and need more memory: for a 12,288-chunk world, 4x4x4
+sections take about 340 MB and octree leaves about 4 GB. When the boxes would need more than half of the
+GPU's memory, the renderer uses the octree and the tab says why. The preview always uses a single kernel.
+
 ## Tested on
 
 | System | GPU | Backends | Tests |
 |---|---|---|---|
-| macOS 26.2 | Apple M4 Pro, 24 GB | Metal, Apple OpenCL | Harness (43 cases, same results on both), real worlds in the Chunky GUI |
+| macOS 26.2 | Apple M4 Pro, 24 GB | Metal, Apple OpenCL | Harness (43 cases; OpenCL and every Metal option give the same results), real worlds up to 16,384 chunks in the Chunky GUI |
 | Windows | NVIDIA RTX 4060 | OpenCL | Harness, with an earlier version (before 0.4.0) |
 
 Built and tested against Chunky commit [`527cb4a`](https://github.com/chunky-dev/chunky/commit/527cb4a)
-(2.5.0 snapshot). On the M4 Pro, a 1024 x 1024 pass of a test scene at ray depth 20 takes about 27 ms on
-Metal and 33 ms on Apple's OpenCL.
+(2.5.0 snapshot).
+
+Time per 1024 x 1024 pass at ray depth 20 on the M4 Pro (Metal):
+
+| Scene | Single kernel, octree | Wavefront, octree | Wavefront, ray tracing (4x4x4) |
+|---|---|---|---|
+| Test scene (150 chunks) | 28 ms | 25 ms | 33 ms |
+| World, 6,144 chunks | 44 ms | 43 ms | 42 ms |
+| World, 12,288 chunks | 99 ms | 87 ms | 78 ms |
+
+Apple's OpenCL takes about 34 ms for the test scene.
 
 | Water: CPU (left) vs GPU (right), without / with water |
 |---|
@@ -94,7 +119,9 @@ Some settings have been added to improve render performance.
 ## Development
 `harness/` compares the GPU renderers with Chunky's CPU path tracer on small test scenes
 (`./harness/run-harness.sh runHarness`, see the script for more tasks). It expects a Chunky checkout in
-`../chunky`. The Metal bridge (`src/main/native`) is only built on macOS.
+`../chunky`. `harness/compare-gpu.py` compares the GPU images of two harness runs, and
+`harness/check-metal-kernels.py` compiles the kernels as Metal without running Chunky. The Metal bridge
+(`src/main/native`) is only built on macOS.
 
 This project is setup to work with IntelliJ and CLion. The base directory is intended to be opened in IntelliJ and the `src/main/opencl` directory in CLion.
 
