@@ -79,10 +79,6 @@ Time per 1024 x 1024 pass at ray depth 20 on the M4 Pro (Metal):
 
 Apple's OpenCL takes about 34 ms for the test scene.
 
-| Water: CPU (left) vs GPU (right), without / with water |
-|---|
-| ![water](docs/images/water-cpu-vs-gpu.png) |
-
 ---
 
 This is a plugin for [Chunky](https://github.com/chunky-dev/chunky) which harnesses the power of the GPU with OpenCL 1.2+ to accelerate rendering.
@@ -94,11 +90,7 @@ This is a plugin for [Chunky](https://github.com/chunky-dev/chunky) which harnes
 ### Note: This requires the `2.5.0` snapshots.
 Download the `.jar` from the [latest release of this fork](https://github.com/Furundane/chunky-diversity/releases). In the Chunky Launcher, expand `Advanced Settings` and click on `Manage plugins`. In the `Plugin Manager` window click on `Add` and select the `.jar` file. Click on `Save` and start Chunky as usual. Remove the original ChunkyCL plugin first if you have it; the two use the same renderer names.
 
-![image](https://user-images.githubusercontent.com/42661490/116319916-28ef2580-a76c-11eb-9f93-86d444a349fd.png)
-
 In the `Advanced` tab, select `ChunkyClRenderer` (OpenCL) or, on macOS, `ChunkyMetalRenderer` as the renderer, and the matching preview renderer (`ChunkyClPreviewRenderer` or `ChunkyMetalPreviewRenderer`).
-
-![image](https://user-images.githubusercontent.com/42661490/122492084-fc040580-cf99-11eb-9b08-b166dc25db41.png)
 
 ## Performance
 
