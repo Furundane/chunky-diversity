@@ -42,7 +42,9 @@ public class ProfileRun {
     s.setCanvasSize(Integer.parseInt(args[i]), Integer.parseInt(args[i + 1]));
     if (args.length > i + 3) s.setRayDepth(Integer.parseInt(args[i + 3]));
     s.setRenderer(FeatureHarness.GPU);
-    s.setTargetSpp(Integer.parseInt(args[i + 2]));
+    // A saved scene resumes from its render dump: render the given spp on top of it.
+    int startSpp = s.spp;
+    s.setTargetSpp(startSpp + Integer.parseInt(args[i + 2]));
     s.setBufferFinalization(true);
     s.setRenderMode(RenderMode.RENDERING);
 
@@ -53,7 +55,7 @@ public class ProfileRun {
     rm.join();
     double ms = (System.nanoTime() - t0) / 1e6;
     System.out.printf(java.util.Locale.ROOT, "TIMING spp=%d totalMs=%.0f msPerSpp=%.2f rayDepth=%d%n",
-        rm.bufferedScene.spp, ms, ms / rm.bufferedScene.spp, s.getRayDepth());
+        rm.bufferedScene.spp - startSpp, ms, ms / (rm.bufferedScene.spp - startSpp), s.getRayDepth());
     System.exit(0);
   }
 }
