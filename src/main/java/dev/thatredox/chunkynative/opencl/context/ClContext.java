@@ -61,6 +61,9 @@ public class ClContext {
         if (extensions.contains("cl_khr_fp64") || extensions.contains("cl_amd_fp64")) {
             options += " -D DEVICE_FP64";
         }
+        // Experiment: -Dchunkycl.buildOptions adds OpenCL build options (e.g. -cl-fast-relaxed-math).
+        String extra = System.getProperty("chunkycl.buildOptions", "");
+        if (!extra.isEmpty()) options += " " + extra;
         int code = clBuildProgram(kernelProgram, 1, deviceArray, options, null, null);
         if (code != CL_SUCCESS) {
             String error;
