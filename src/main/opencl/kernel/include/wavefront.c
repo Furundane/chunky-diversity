@@ -35,10 +35,12 @@
 //   trace  (floats 35..37): HwRtTrace start, candidate distance, candidate leafExit
 //          (ints 12..21):   HwRtTrace current, lastCell (3), queries, candidate cell (3), candidate data,
 //                           candidate found  (world octree traced with hardware ray tracing, see wf_trace)
-#define STATE_F 38
+//   shadow light (floats 38..41): attenuation (3) and weight so far (see wf_shadowStep)
+#define STATE_F 42
 #define STATE_I 22
 #define TRACE_F 35
 #define TRACE_I 12
+#define SHADOW_LIGHT_F 38
 #define HIT_F 12
 #define HIT_I 4
 #define SHADOW_F 26
@@ -46,9 +48,11 @@
 
 // Queues: queues[k * wave[3] + i], k = 0 and 1: live paths (input and output alternate per bounce,
 // wave[4] is the input), k = 2: paths that requested sun light, k = 3 and 4: paths whose world
-// octree trace continues in the next round (wave[5] is the input). control: queue lengths
-// (control[k] for k < 3, control[CONTROL_TRACE + k - 3] for the trace queues), the indirect
-// dispatch arguments (threadgroups) for the path, shadow and trace queues, and statistics.
+// octree trace continues in the next round (wave[5] is the input), k = 5 and 6: shadow rays that
+// continue in the next shadow step (wave[9] is the input). control: queue lengths (control[k] for
+// k < 3, control[CONTROL_TRACE + k - 3] for the trace queues, control[CONTROL_SHADOW_STEP + k - 5]
+// for the shadow step queues), the indirect dispatch arguments (threadgroups) for the path, shadow,
+// trace and shadow step queues, and statistics.
 #define QUEUE_SHADOW 2
 #define QUEUE_TRACE 3
 #define CONTROL_ARGS 4
@@ -56,6 +60,9 @@
 #define CONTROL_STATS 12
 #define CONTROL_TRACE 16
 #define CONTROL_TRACE_ARGS 20
+#define QUEUE_SHADOW_STEP 5
+#define CONTROL_SHADOW_STEP 24
+#define CONTROL_SHADOW_STEP_ARGS 28
 #define CONTROL_SIZE 32
 
 // The path state and the control block and queues share two buffers (state, work), since Metal
@@ -96,7 +103,9 @@
 
 // The parameters of every wavefront kernel: the render kernel's, then the path state and the wave
 // ([0] first pixel, [1] number of paths, [2] bounce, [3] paths the state buffers hold, [4] input
-// queue, [5] input trace queue, [6] last trace round, [7] leaves wf_resolve marches per round).
+// queue, [5] input trace queue, [6] last trace round, [7] leaves wf_resolve marches per round,
+// [8] trace the shadow ray (1) or the path's ray (0), [9] input shadow step queue, [10] last shadow
+// step, [11] shadow step).
 #define WF_PARAMS \
     __global const int* projectorType, \
     __global const float* cameraSettings, \
@@ -189,6 +198,27 @@ void WF_storeRay(PathState s, Ray ray) {
     WF_set3(s, 3, ray.direction);
     WF_I(s, 0) = ray.material;
     WF_I(s, 1) = ray.flags;
+}
+
+// The ray of a path's shadow (sun light) request.
+Ray WF_loadShadowRay(PathState s) {
+    Ray ray;
+    ray.origin = WF_get3(s, SHADOW_F);
+    ray.direction = WF_get3(s, SHADOW_F + 3);
+    ray.material = WF_I(s, SHADOW_I + 1);
+    ray.flags = WF_I(s, SHADOW_I + 2);
+    return ray;
+}
+
+void WF_storeShadowRay(PathState s, Ray ray) {
+    WF_set3(s, SHADOW_F, ray.origin);
+    WF_I(s, SHADOW_I + 1) = ray.material;
+    WF_I(s, SHADOW_I + 2) = ray.flags;
+}
+
+// The ray the trace kernels (wf_trace, wf_resolve) follow: the shadow ray in the shadow steps.
+Ray WF_traceRay(PathState s, __global const int* wave) {
+    return wave[8] ? WF_loadShadowRay(s) : WF_loadRay(s);
 }
 
 void WF_storeHit(PathState s, bool hit, IntersectionRecord record, MaterialSample sample) {
@@ -292,6 +322,11 @@ __kernel void wf_prepare(WF_PARAMS KERNEL_GID_PARAM) {
 __kernel void wf_prepareShadow(WF_PARAMS KERNEL_GID_PARAM) {
     WF_BUFFERS;
     if (GLOBAL_ID != 0) return;
+    // Empty queues for the shadow steps (wf_shadowBegin)
+    control[CONTROL_TRACE] = 0;
+    control[CONTROL_TRACE + 1] = 0;
+    control[CONTROL_SHADOW_STEP] = 0;
+    control[CONTROL_SHADOW_STEP + 1] = 0;
     control[CONTROL_SHADOW_ARGS] = (control[QUEUE_SHADOW] + WF_GROUP - 1) / WF_GROUP;
     control[CONTROL_SHADOW_ARGS + 1] = 1;
     control[CONTROL_SHADOW_ARGS + 2] = 1;
@@ -389,7 +424,7 @@ __kernel void wf_trace(WF_PARAMS KERNEL_GID_PARAM) {
     HwRtCandidate candidate;
     float distance;
     WF_I(s, TRACE_I + 4) += 1;
-    bool found = HwRt_query(hwAccel, hwFunctions, WF_loadRay(s), WF_F(s, TRACE_F), HUGE_VALF, &candidate, &distance);
+    bool found = HwRt_query(hwAccel, hwFunctions, WF_traceRay(s, wave), WF_F(s, TRACE_F), HUGE_VALF, &candidate, &distance);
 #ifdef CHUNKYCL_HWRT_STATS
     // [14] hardware queries, [15] intersection function calls they made
     ATOMIC_ADD(control + CONTROL_STATS + 2, 1u);
@@ -426,7 +461,7 @@ __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
     if (!WF_I(s, TRACE_I + 9)) return;  // Nothing more along the ray
 
     WF_SCENE(scene);
-    Ray ray = WF_loadRay(s);
+    Ray ray = WF_traceRay(s, wave);
     float start = WF_F(s, TRACE_F);
     int queries = WF_I(s, TRACE_I + 4);
     float distance = WF_F(s, TRACE_F + 1);
@@ -714,6 +749,93 @@ __kernel void wf_shadow(WF_PARAMS KERNEL_GID_PARAM) {
     shadow.flags = WF_I(s, SHADOW_I + 2);
     float3 attenuation = Scene_directLightAttenuation(scene, textureAtlas, shadow);
     WF_set3(s, 6, WF_get3(s, 6) + WF_get3(s, SHADOW_F + 6) * attenuation);
+}
+
+// Sun light with hardware ray tracing of the world octree, in steps: wf_shadowBegin, then per step
+// the trace rounds on the shadow ray (wf_prepareTrace, wf_trace, wf_resolve with wave[8] = 1), then
+// wf_prepareShadowStep and wf_shadowStep, which finishes the intersection (entities, clouds, water)
+// and lets the light through the surface (Scene_attenuate) or ends it. The last step finishes the
+// remaining rays with Scene_directLightAttenuationFrom. Same result as wf_shadow.
+
+// A shadow ray at the start of a step: queued for the step and for its world octree trace.
+void WF_queueShadowStep(PathState s, Ray ray, __global uint* queues, __global uint* control, __global const int* wave,
+                        int out, int p) {
+    WF_storeShadowRay(s, ray);
+    WF_I(s, HIT_I) = 0;
+    WF_F(s, TRACE_F) = 0;
+    WF_I(s, TRACE_I) = ray.material;
+    WF_I(s, TRACE_I + 4) = 0;
+    queues[(QUEUE_SHADOW_STEP + out) * wave[3] + ATOMIC_ADD(control + CONTROL_SHADOW_STEP + out, 1u)] = (uint) p;
+    queues[QUEUE_TRACE * wave[3] + ATOMIC_ADD(control + CONTROL_TRACE, 1u)] = (uint) p;
+}
+
+// Starts the sun light of the paths that requested it (as Scene_directLightAttenuation starts).
+__kernel void wf_shadowBegin(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
+    int p = WF_queued(queues, control, wave, QUEUE_SHADOW, GLOBAL_ID);
+    if (p < 0) return;
+    PathState s = WF_path(stateF, stateI, wave, p);
+    WF_I(s, SHADOW_I) = 0;
+    Ray ray = WF_loadShadowRay(s);
+    ray.origin += ray.direction * OFFSET;
+    WF_set3(s, SHADOW_LIGHT_F, make_float3(1, 1, 1));
+    WF_F(s, SHADOW_LIGHT_F + 3) = 1;
+    WF_queueShadowStep(s, ray, queues, control, wave, 0, p);
+}
+
+// Indirect dispatch size for the input shadow step queue; empties the output step queue and the
+// trace queue for the next step. One thread.
+__kernel void wf_prepareShadowStep(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
+    if (GLOBAL_ID != 0) return;
+    int in = wave[9];
+    control[CONTROL_SHADOW_STEP_ARGS] = (control[CONTROL_SHADOW_STEP + in] + WF_GROUP - 1) / WF_GROUP;
+    control[CONTROL_SHADOW_STEP_ARGS + 1] = 1;
+    control[CONTROL_SHADOW_STEP_ARGS + 2] = 1;
+    control[CONTROL_SHADOW_STEP + 1 - in] = 0;
+    control[CONTROL_TRACE] = 0;
+    control[CONTROL_TRACE + 1] = 0;
+}
+
+// One step of the sun light: the rest of the intersection after the world octree (as
+// closestIntersect), then the surface's effect on the light (as Scene_directLightAttenuationFrom).
+__kernel void wf_shadowStep(WF_PARAMS KERNEL_GID_PARAM) {
+    WF_BUFFERS;
+    int in = wave[9];
+    if (GLOBAL_ID >= (int) control[CONTROL_SHADOW_STEP + in]) return;
+    int p = (int) queues[(QUEUE_SHADOW_STEP + in) * wave[3] + GLOBAL_ID];
+    PathState s = WF_path(stateF, stateI, wave, p);
+    WF_SCENE(scene);
+    WF_NO_HWRT(scene);  // The last step marches the octree; this kernel makes no hardware calls
+
+    Ray ray = WF_loadShadowRay(s);
+    IntersectionRecord record = IntersectionRecord_new();
+    record.medium = ray.material;
+    MaterialSample sample;
+    bool hit = WF_I(s, HIT_I) != 0;
+    if (hit) WF_loadHit(s, &record, &sample);
+    hit = Scene_intersectAfterWorld(scene, textureAtlas, ray, ray, hit, true, &record, &sample);
+
+    float3 attenuation = WF_get3(s, SHADOW_LIGHT_F);
+    float w = WF_F(s, SHADOW_LIGHT_F + 3);
+    float3 light = make_float3(0, 0, 0);
+    if (!hit) {
+        light = attenuation * w;
+    } else {
+        Material material = (record.flags & HIT_CLOUD) ? Material_cloud() : Material_get(scene.materialPalette, record.material);
+        if (Scene_attenuate(scene, &ray, record, sample, material, &attenuation, &w)) {
+            if (wave[10]) {
+                light = Scene_directLightAttenuationFrom(scene, textureAtlas, ray, attenuation, w, wave[11] + 1);
+            } else {
+                ray.origin += ray.direction * OFFSET;
+                WF_set3(s, SHADOW_LIGHT_F, attenuation);
+                WF_F(s, SHADOW_LIGHT_F + 3) = w;
+                WF_queueShadowStep(s, ray, queues, control, wave, 1 - in, p);
+                return;
+            }
+        }
+    }
+    WF_set3(s, 6, WF_get3(s, 6) + WF_get3(s, SHADOW_F + 6) * light);
 }
 
 // Adds the paths' light to the pass buffer (the running average over the samples so far).

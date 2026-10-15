@@ -47,7 +47,8 @@ public class MetalContext {
     /** Kernel functions of the wavefront render loop (kernel/include/wavefront.c), in this order. */
     public static final String[] WAVEFRONT_FUNCTIONS = {
             "wf_generate", "wf_intersect", "wf_shade", "wf_shadow", "wf_finish", "wf_prepare", "wf_prepareShadow",
-            "wf_traceProbe", "wf_begin", "wf_prepareTrace", "wf_trace", "wf_resolve", "wf_intersectRest", "wf_world", "wf_traceWater", "wf_resolveWater"};
+            "wf_traceProbe", "wf_begin", "wf_prepareTrace", "wf_trace", "wf_resolve", "wf_intersectRest", "wf_world", "wf_traceWater", "wf_resolveWater",
+            "wf_shadowBegin", "wf_prepareShadowStep", "wf_shadowStep"};
 
     /** Whether the Metal renderer runs the wavefront render loop (see {@link MetalSettings#wavefront}). */
     public static boolean wavefront() {

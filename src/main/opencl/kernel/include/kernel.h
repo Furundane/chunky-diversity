@@ -178,12 +178,40 @@ int Scene_sunMode(Scene self, Ray ray) {
     return (self.sunStrategy & SUN_DIFFUSE_SKY) ? SUN_DIFFUSE : SUN_NONE;
 }
 
-// Fraction of sunlight that reaches the ray origin along the ray, through translucent surfaces and water.
-// See PathTracer.getDirectLightAttenuation.
-float3 Scene_directLightAttenuation(Scene self, image2d_array_t atlas, Ray ray) {
-    float3 attenuation = (float3) (1);
-    float w = 1;
-    for (int i = 0; i < 16; i++) {
+// One surface on the way to the sun (see Scene_directLightAttenuationFrom): multiplies the light by
+// what the surface lets through and moves the ray to it. Returns false when no light gets through.
+bool Scene_attenuate(Scene self, __private Ray* ray, IntersectionRecord record, MaterialSample sample, Material material,
+                     __private float3* attenuation, __private float* w) {
+    if (ray->flags & RAY_WATER) {
+        *w *= Water_attenuation(self.water, record.distance);
+    }
+    float3 color;
+    float alpha;
+    if (record.flags & HIT_WATER) {
+        color = Water_color(self.water, sample);
+        alpha = self.water.opacity;
+        ray->flags ^= RAY_WATER;
+        if (self.sunStrategy & SUN_STRICT_DIRECT) *w = 0;
+    } else {
+        color = sample.color.xyz;
+        alpha = sample.color.w;
+        if ((self.sunStrategy & SUN_STRICT_DIRECT) && material.ior != DEFAULT_IOR) *w = 0;
+        ray->material = record.block;
+    }
+    float mult = 1 - alpha;
+    *attenuation *= color * alpha + mult;
+    *w *= mult;
+    if (*w <= 0) {
+        return false;
+    }
+    ray->origin += ray->direction * record.distance;
+    return true;
+}
+
+// The loop of Scene_directLightAttenuation from its iteration `first`, with the attenuation and
+// weight so far (the wavefront kernels run the first iterations elsewhere).
+float3 Scene_directLightAttenuationFrom(Scene self, image2d_array_t atlas, Ray ray, float3 attenuation, float w, int first) {
+    for (int i = first; i < 16; i++) {
         ray.origin += ray.direction * OFFSET;
         IntersectionRecord record = IntersectionRecord_new();
         MaterialSample sample;
@@ -191,31 +219,17 @@ float3 Scene_directLightAttenuation(Scene self, image2d_array_t atlas, Ray ray) 
         if (!closestIntersect(self, atlas, ray, &record, &sample, &material)) {
             break;
         }
-        if (ray.flags & RAY_WATER) {
-            w *= Water_attenuation(self.water, record.distance);
-        }
-        float3 color;
-        float alpha;
-        if (record.flags & HIT_WATER) {
-            color = Water_color(self.water, sample);
-            alpha = self.water.opacity;
-            ray.flags ^= RAY_WATER;
-            if (self.sunStrategy & SUN_STRICT_DIRECT) w = 0;
-        } else {
-            color = sample.color.xyz;
-            alpha = sample.color.w;
-            if ((self.sunStrategy & SUN_STRICT_DIRECT) && material.ior != DEFAULT_IOR) w = 0;
-            ray.material = record.block;
-        }
-        float mult = 1 - alpha;
-        attenuation *= color * alpha + mult;
-        w *= mult;
-        if (w <= 0) {
+        if (!Scene_attenuate(self, &ray, record, sample, material, &attenuation, &w)) {
             return (float3) (0);
         }
-        ray.origin += ray.direction * record.distance;
     }
     return attenuation * w;
+}
+
+// Fraction of sunlight that reaches the ray origin along the ray, through translucent surfaces and water.
+// See PathTracer.getDirectLightAttenuation.
+float3 Scene_directLightAttenuation(Scene self, image2d_array_t atlas, Ray ray) {
+    return Scene_directLightAttenuationFrom(self, atlas, ray, (float3) (1), 1, 0);
 }
 
 // Sunlight scattered by fog at a point: how much of the sun is visible from there (PathTracer samples a

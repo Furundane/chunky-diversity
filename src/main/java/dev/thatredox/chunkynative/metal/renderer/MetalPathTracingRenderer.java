@@ -189,7 +189,15 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         // Kernels, in the order of MetalContext.WAVEFRONT_FUNCTIONS.
         private static final int GENERATE = 0, INTERSECT = 1, SHADE = 2, SHADOW = 3, FINISH = 4, PREPARE = 5, PREPARE_SHADOW = 6,
                 TRACE_PROBE = 7, BEGIN = 8, PREPARE_TRACE = 9, TRACE = 10, RESOLVE = 11, INTERSECT_REST = 12, WORLD = 13,
-                TRACE_WATER = 14, RESOLVE_WATER = 15;
+                TRACE_WATER = 14, RESOLVE_WATER = 15, SHADOW_BEGIN = 16, PREPARE_SHADOW_STEP = 17, SHADOW_STEP = 18;
+        /**
+         * Steps of the sun light with hardware ray tracing (-Dchunkymetal.shadowSteps); the last one
+         * finishes the remaining rays with the octree march. 0 (the default) traces sun light with
+         * the octree march only (wf_shadow): shadow rays mostly leave the terrain for the sky, which
+         * the march does in a few steps, and on an M4 Pro the steps were slower (Greenfield 78.5 ms
+         * per pass with 0 steps, 84.7 with 1, 87.6 with 3).
+         */
+        private static final int SHADOW_STEPS = Integer.getInteger("chunkymetal.shadowSteps", 0);
         /** How the world octree is traced with hardware ray tracing: "split" (rounds) or "fused" (wf_world). */
         private static final String TRACE_MODE = System.getProperty("chunkymetal.traceMode", "split");
         /**
@@ -204,7 +212,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         /** Threadgroup size of the indirect dispatches (WF_GROUP in wavefront.c). */
         private static final int GROUP_SIZE = 64;
         /** Byte offsets of the indirect dispatch arguments in the control buffer (CONTROL_ARGS, CONTROL_SHADOW_ARGS). */
-        private static final long ARGS = 4 * 4, SHADOW_ARGS = 8 * 4, TRACE_ARGS = 20 * 4;
+        private static final long ARGS = 4 * 4, SHADOW_ARGS = 8 * 4, TRACE_ARGS = 20 * 4, SHADOW_STEP_ARGS = 28 * 4;
         private static final boolean STATS = System.getProperty("chunkymetal.defines", "").contains("CHUNKYCL_HWRT_STATS");
         /**
          * Lanes (-Dchunkymetal.lanes): the pixels are split into this many parts with their own path
@@ -234,6 +242,10 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
              * wf_resolve marches.
              */
             final MetalBuffer[][][] waves;
+            /** The same per trace round of the shadow steps (tracing the shadow ray). */
+            final MetalBuffer[][][] shadowRounds;
+            /** Per wave, bounce and shadow step: as waves, with the step's queue, whether it is the last, and its number. */
+            final MetalBuffer[][][] shadowSteps;
             final int[] counts;
 
             Lane(long context, float[] passBuffer, int first, int pixels, int rayDepth) {
@@ -241,20 +253,30 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                 this.first = first;
                 this.pixels = pixels;
                 long paths = Math.max(1, Math.min(pixels, WAVE_SIZE));
-                // STATE_F + STATE_I, CONTROL_SIZE and five queues in wavefront.c
-                state = new MetalBuffer(context, paths * (38 + 22) * 4);
-                work = new MetalBuffer(context, (32 + paths * 5) * 4);
+                // STATE_F + STATE_I, CONTROL_SIZE and seven queues in wavefront.c
+                state = new MetalBuffer(context, paths * (42 + 22) * 4);
+                work = new MetalBuffer(context, (32 + paths * 7) * 4);
                 int waveCount = (pixels + WAVE_SIZE - 1) / WAVE_SIZE;
                 int rounds = Math.max(1, TRACE_ROUNDS);
+                int steps = Math.max(1, SHADOW_STEPS);
                 waves = new MetalBuffer[waveCount][rayDepth + 1][rounds];
+                shadowRounds = new MetalBuffer[waveCount][rayDepth + 1][rounds];
+                shadowSteps = new MetalBuffer[waveCount][rayDepth + 1][steps];
                 counts = new int[waveCount];
                 for (int w = 0; w < waveCount; w++) {
                     int start = first + w * WAVE_SIZE;
                     counts[w] = Math.min(WAVE_SIZE, pixels - w * WAVE_SIZE);
                     for (int d = 0; d <= rayDepth; d++) {
                         for (int r = 0; r < rounds; r++) {
+                            int last = r == rounds - 1 ? 1 : 0;
                             waves[w][d][r] = MetalBuffer.ofInts(context, new int[] {
-                                    start, counts[w], d, (int) paths, d % 2, r % 2, r == rounds - 1 ? 1 : 0, RESOLVE_STEPS});
+                                    start, counts[w], d, (int) paths, d % 2, r % 2, last, RESOLVE_STEPS, 0, 0, 0, 0});
+                            shadowRounds[w][d][r] = MetalBuffer.ofInts(context, new int[] {
+                                    start, counts[w], d, (int) paths, d % 2, r % 2, last, RESOLVE_STEPS, 1, 0, 0, 0});
+                        }
+                        for (int k = 0; k < steps; k++) {
+                            shadowSteps[w][d][k] = MetalBuffer.ofInts(context, new int[] {
+                                    start, counts[w], d, (int) paths, d % 2, 0, 0, RESOLVE_STEPS, 1, k % 2, k == steps - 1 ? 1 : 0, k});
                         }
                     }
                 }
@@ -264,9 +286,11 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                 output.close();
                 state.close();
                 work.close();
-                for (MetalBuffer[][] wave : waves) {
-                    for (MetalBuffer[] bounce : wave) {
-                        for (MetalBuffer b : bounce) b.close();
+                for (MetalBuffer[][][] all : new MetalBuffer[][][][] {waves, shadowRounds, shadowSteps}) {
+                    for (MetalBuffer[][] wave : all) {
+                        for (MetalBuffer[] bounce : wave) {
+                            for (MetalBuffer b : bounce) b.close();
+                        }
                     }
                 }
             }
@@ -425,7 +449,20 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     }
                     d.indirect(SHADE, wave, ARGS);
                     d.direct(PREPARE_SHADOW, wave, 1);
-                    d.indirect(SHADOW, wave, SHADOW_ARGS);
+                    if (split && SHADOW_STEPS > 0) {
+                        d.indirect(SHADOW_BEGIN, wave, SHADOW_ARGS);
+                        for (MetalBuffer step : lane.shadowSteps[w][depth]) {
+                            for (MetalBuffer round : lane.shadowRounds[w][depth]) {
+                                d.direct(PREPARE_TRACE, round, 1);
+                                d.indirect(TRACE, round, TRACE_ARGS);
+                                d.indirect(RESOLVE, round, TRACE_ARGS);
+                            }
+                            d.direct(PREPARE_SHADOW_STEP, step, 1);
+                            d.indirect(SHADOW_STEP, step, SHADOW_STEP_ARGS);
+                        }
+                    } else {
+                        d.indirect(SHADOW, wave, SHADOW_ARGS);
+                    }
                 }
                 d.direct(FINISH, lane.waves[w][0][0], count);
             }
