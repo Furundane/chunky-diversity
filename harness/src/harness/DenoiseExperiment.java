@@ -175,10 +175,10 @@ public class DenoiseExperiment {
         float[] params = new float[35];
         params[0] = ox;
         params[1] = oy;
-        params[2] = f == 0 ? 1 : 0;
+        params[2] = f == 0 || input.equals("accumreset") ? 1 : 0;
         System.arraycopy(worldToView(cam), 0, params, 3, 16);
         System.arraycopy(viewToClip(cam, w, h), 0, params, 19, 16);
-        denoiseNanos += denoiser.denoise(input.equals("accum") ? accumulated : color, depth, motion, normal, diffuse, specular, roughness, params, out);
+        denoiseNanos += denoiser.denoise(input.startsWith("accum") ? accumulated : color, depth, motion, normal, diffuse, specular, roughness, params, out);
         previous = cam;
 
         int n = f + 1;

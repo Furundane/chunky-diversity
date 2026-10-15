@@ -52,6 +52,10 @@ void Aov_store(__global float* aov, int gid, Scene scene, image2d_array_t atlas,
     float3 forward = make_float3(cameraSettings[5], cameraSettings[8], cameraSettings[11]);
     float viewDepth = dot(hitPoint - vload3(0, cameraSettings), forward);
     float3 normal = record.normal;
+    // Water surfaces facing up or down get the wave normal, as in the render loop.
+    if ((record.flags & HIT_WATER) && scene.water.waveMode != WAVES_STILL && record.normal.y != 0) {
+        normal = Water_waveNormal(scene.water, hitPoint);
+    }
     if (dot(normal, ray.direction) > 0) normal = -normal;
     float3 diffuse, specular;
     float roughness;
