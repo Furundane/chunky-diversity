@@ -10,7 +10,7 @@
 @property id<MTLDevice> device;
 @property id<MTLCommandQueue> queue;
 @property id<MTLFXTemporalDenoisedScaler> scaler;
-@property int width, height;
+@property int width, height, outWidth, outHeight;
 @property id<MTLTexture> color, depth, motion, normal, diffuse, specular, roughness, output, exposure;
 @property id<MTLBuffer> colorStage, depthStage, motionStage, normalStage, diffuseStage, specularStage, roughnessStage, outputStage, exposureStage;
 @end
@@ -28,13 +28,15 @@ static void fail(const char *message) {
     fprintf(stderr, "metalfx: %s\n", message);
 }
 
-JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_create(JNIEnv *env, jclass cls, jint width, jint height) {
+JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_create(JNIEnv *env, jclass cls, jint width, jint height, jint outWidth, jint outHeight) {
     @autoreleasepool {
         MfxDenoiser *d = [MfxDenoiser new];
         d.device = MTLCreateSystemDefaultDevice();
         d.queue = [d.device newCommandQueue];
         d.width = width;
         d.height = height;
+        d.outWidth = outWidth;
+        d.outHeight = outHeight;
         if (@available(macOS 26.0, *)) {
             if (![MTLFXTemporalDenoisedScalerDescriptor supportsDevice:d.device]) {
                 fail("denoised scaler not supported on this device");
@@ -51,8 +53,8 @@ JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_create(JNIEnv *env, jclass 
             desc.outputTextureFormat = MTLPixelFormatRGBA16Float;
             desc.inputWidth = width;
             desc.inputHeight = height;
-            desc.outputWidth = width;
-            desc.outputHeight = height;
+            desc.outputWidth = outWidth;
+            desc.outputHeight = outHeight;
             desc.requiresSynchronousInitialization = YES;
             desc.autoExposureEnabled = NO;
             d.scaler = [desc newTemporalDenoisedScalerWithDevice:d.device];
@@ -68,7 +70,7 @@ JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_create(JNIEnv *env, jclass 
             d.specular = newTexture(d, MTLPixelFormatRGBA16Float, s.specularAlbedoTextureUsage, width, height);
             d.normal = newTexture(d, MTLPixelFormatRGBA16Float, s.normalTextureUsage, width, height);
             d.roughness = newTexture(d, MTLPixelFormatR16Float, s.roughnessTextureUsage, width, height);
-            d.output = newTexture(d, MTLPixelFormatRGBA16Float, s.outputTextureUsage, width, height);
+            d.output = newTexture(d, MTLPixelFormatRGBA16Float, s.outputTextureUsage, outWidth, outHeight);
             d.exposure = newTexture(d, MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1);
             long px = (long) width * height;
             MTLResourceOptions shared = MTLResourceStorageModeShared;
@@ -79,7 +81,7 @@ JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_create(JNIEnv *env, jclass 
             d.specularStage = [d.device newBufferWithLength:px * 8 options:shared];
             d.normalStage = [d.device newBufferWithLength:px * 8 options:shared];
             d.roughnessStage = [d.device newBufferWithLength:px * 2 options:shared];
-            d.outputStage = [d.device newBufferWithLength:px * 8 options:shared];
+            d.outputStage = [d.device newBufferWithLength:(long) outWidth * outHeight * 8 options:shared];
             d.exposureStage = [d.device newBufferWithLength:16 options:shared];
             ((__fp16 *) d.exposureStage.contents)[0] = 1.0f;
             return (jlong) CFBridgingRetain(d);
@@ -175,8 +177,8 @@ JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_denoise(JNIEnv *env, jclass
             id<MTLCommandBuffer> readBuffer = [d.queue commandBuffer];
             blit = [readBuffer blitCommandEncoder];
             [blit copyFromTexture:d.output sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-                       sourceSize:MTLSizeMake(d.width, d.height, 1) toBuffer:d.outputStage destinationOffset:0
-          destinationBytesPerRow:d.width * 8 destinationBytesPerImage:px * 8];
+                       sourceSize:MTLSizeMake(d.outWidth, d.outHeight, 1) toBuffer:d.outputStage destinationOffset:0
+          destinationBytesPerRow:d.outWidth * 8 destinationBytesPerImage:(long) d.outWidth * d.outHeight * 8];
             [blit endEncoding];
             [readBuffer commit];
             [readBuffer waitUntilCompleted];
@@ -188,7 +190,7 @@ JNIEXPORT jlong JNICALL Java_harness_MetalFxDenoiser_denoise(JNIEnv *env, jclass
 
             jfloat *dst = (*env)->GetPrimitiveArrayCritical(env, out, NULL);
             const __fp16 *o = d.outputStage.contents;
-            for (long i = 0; i < px; i++) {
+            for (long i = 0; i < (long) d.outWidth * d.outHeight; i++) {
                 dst[i * 3] = o[i * 4];
                 dst[i * 3 + 1] = o[i * 4 + 1];
                 dst[i * 3 + 2] = o[i * 4 + 2];

@@ -9,7 +9,7 @@ public final class MetalFxDenoiser implements AutoCloseable {
     System.load(System.getProperty("harness.metalfxLib"));
   }
 
-  private static native long create(int width, int height);
+  private static native long create(int width, int height, int outWidth, int outHeight);
 
   private static native long denoise(long handle, float[] color, float[] depth, float[] motion, float[] normal,
                                      float[] diffuse, float[] specular, float[] roughness, float[] params, float[] out);
@@ -18,8 +18,8 @@ public final class MetalFxDenoiser implements AutoCloseable {
 
   private final long handle;
 
-  public MetalFxDenoiser(int width, int height) {
-    handle = create(width, height);
+  public MetalFxDenoiser(int width, int height, int outWidth, int outHeight) {
+    handle = create(width, height, outWidth, outHeight);
     if (handle == 0) throw new IllegalStateException("MetalFX denoiser unavailable");
   }
 

@@ -25,9 +25,10 @@ import java.util.Random;
  * Experiment: the MetalFX temporal denoiser on 1 spp frames of the Metal path tracer (single kernel,
  * octree, kernel define CHUNKYCL_AOV for the denoiser inputs and one subpixel offset per frame).
  * Args: scene directory, scene name, width, height, reference spp, frames, output directory,
- * jitter mode (pos, neg, flipy, flipx, zero), camera strafe per frame (0 = still camera), denoiser color input
+ * jitter mode (neg: right for MetalFX; pos, flipy, flipx, zero), camera strafe per frame (0 = still camera), denoiser color input
  * (frame: each 1 spp frame; accum: the running average, still camera only), AOVs (first: first hit;
- * through: the surface behind glass).
+ * through: the surface behind glass), "nomotion" to leave out motion vectors, upscale factor (frames are
+ * rendered at width / factor and the denoiser outputs width x height).
  * Prints PSNR against the reference (Chunky's gamma tone mapping) and writes PNGs of some frames.
  */
 public class DenoiseExperiment {
@@ -88,11 +89,12 @@ public class DenoiseExperiment {
     int w = Integer.parseInt(args[2]), h = Integer.parseInt(args[3]);
     int refSpp = Integer.parseInt(args[4]), frames = Integer.parseInt(args[5]);
     File outDir = new File(args[6]);
-    String jitterMode = args.length > 7 ? args[7] : "pos";
+    String jitterMode = args.length > 7 ? args[7] : "neg";
     double strafe = args.length > 8 ? Double.parseDouble(args[8]) : 0;
     String input = args.length > 9 ? args[9] : "frame";
     String aovMode = args.length > 10 ? args[10] : "first";
     boolean useMotion = !(args.length > 11 && args[11].equals("nomotion"));
+    int scale = args.length > 12 ? Integer.parseInt(args[12]) : 1;
     outDir.mkdirs();
 
     Chunky.loadDefaultTextures();
@@ -104,7 +106,7 @@ public class DenoiseExperiment {
     s.loadScene(ctx, name, TaskTracker.NONE);
     s.setCanvasSize(w, h);
     float exposure = (float) s.getExposure();
-    int px = w * h;
+    int outW = w, outH = h;
 
     MetalContext metal = MetalContext.get();
     metal.sceneLoader.ensureLoad(s);
@@ -116,21 +118,28 @@ public class DenoiseExperiment {
     long withAov = metal.renderPipeline(aovDefines);
     if (new CameraData(s).projectorType != 0) throw new IllegalStateException("needs a pinhole camera");
 
-    try (Gpu gpu = new Gpu(metal, s); MetalFxDenoiser denoiser = new MetalFxDenoiser(w, h)) {
-      // Reference at the camera of the last frame.
+    // Reference at the output size and the camera of the last frame.
+    float[] reference;
+    try (Gpu gpu = new Gpu(metal, s)) {
       if (strafe != 0) s.camera().strafeRight(strafe * (frames - 1));
-      float[] reference = reference(gpu, plain, Arrays.copyOf(new CameraData(s).settings, 17), refSpp,
+      reference = reference(gpu, plain, Arrays.copyOf(new CameraData(s).settings, 17), refSpp,
           new File(outDir, String.format(Locale.ROOT, "ref-%s-%dx%d-%d-%s.bin", name, w, h, refSpp, strafe * (frames - 1))));
       if (strafe != 0) s.camera().strafeLeft(strafe * (frames - 1));
       writePng(reference, w, h, exposure, new File(outDir, "reference.png"));
+    }
+    w /= scale;
+    h /= scale;
+    s.setCanvasSize(w, h);
+    int px = w * h;
+    try (Gpu gpu = new Gpu(metal, s); MetalFxDenoiser denoiser = new MetalFxDenoiser(w, h, outW, outH)) {
 
-      float[] color = new float[3 * px], aov = new float[16 * px], accumulated = new float[3 * px], out = new float[3 * px];
+      float[] color = new float[3 * px], aov = new float[16 * px], accumulated = new float[3 * px], out = new float[3 * outW * outH];
       float[] depth = new float[px], motion = new float[2 * px], normal = new float[3 * px];
       float[] diffuse = new float[3 * px], specular = new float[3 * px], roughness = new float[px];
       float[] previous = null;
       Random random = new Random(1);
       long renderNanos = 0, denoiseNanos = 0;
-      System.out.printf(Locale.ROOT, "DENOISE scene=%s %dx%d ref=%d spp jitter=%s strafe=%s input=%s aov=%s%n", name, w, h, refSpp, jitterMode, strafe, input, aovMode);
+      System.out.printf(Locale.ROOT, "DENOISE scene=%s %dx%d -> %dx%d ref=%d spp jitter=%s strafe=%s input=%s aov=%s%n", name, w, h, outW, outH, refSpp, jitterMode, strafe, input, aovMode);
       for (int f = 0; f < frames; f++) {
         if (f > 0 && strafe != 0) s.camera().strafeRight(strafe);
         float[] cam = Arrays.copyOf(new CameraData(s).settings, 17);
@@ -186,14 +195,14 @@ public class DenoiseExperiment {
         if (Integer.bitCount(n) == 1 || last) {
           String tag = String.format(Locale.ROOT, "%03d", n);
           writePng(color, w, h, exposure, new File(outDir, "frame" + tag + "-noisy.png"));
-          writePng(out, w, h, exposure, new File(outDir, "frame" + tag + "-denoised.png"));
+          writePng(out, outW, outH, exposure, new File(outDir, "frame" + tag + "-denoised.png"));
           if (strafe == 0) {
             writePng(accumulated, w, h, exposure, new File(outDir, "frame" + tag + "-accumulated.png"));
             System.out.printf(Locale.ROOT, "frame %3d  PSNR dB: 1 spp %.2f  accumulated %d spp %.2f  denoised %.2f%n",
-                n, psnr(color, reference, exposure), n, psnr(accumulated, reference, exposure), psnr(out, reference, exposure));
+                n, psnr(upscale(color, w, h, scale), reference, exposure), n, psnr(upscale(accumulated, w, h, scale), reference, exposure), psnr(out, reference, exposure));
           } else if (last) {
             System.out.printf(Locale.ROOT, "frame %3d (moving)  PSNR dB: 1 spp %.2f  denoised %.2f%n",
-                n, psnr(color, reference, exposure), psnr(out, reference, exposure));
+                n, psnr(upscale(color, w, h, scale), reference, exposure), psnr(out, reference, exposure));
           }
         }
       }
@@ -201,6 +210,19 @@ public class DenoiseExperiment {
           renderNanos / 1e6 / frames, denoiseNanos / 1e6 / frames);
     }
     System.exit(0);
+  }
+
+  /** Nearest-neighbor upscale of an rgb image by an integer factor. */
+  static float[] upscale(float[] rgb, int w, int h, int scale) {
+    if (scale == 1) return rgb;
+    float[] out = new float[rgb.length * scale * scale];
+    int ow = w * scale;
+    for (int y = 0; y < h * scale; y++) {
+      for (int x = 0; x < ow; x++) {
+        System.arraycopy(rgb, ((y / scale) * w + x / scale) * 3, out, (y * ow + x) * 3, 3);
+      }
+    }
+    return out;
   }
 
   static float[] reference(Gpu gpu, long pipeline, float[] cam, int spp, File cache) throws IOException {
