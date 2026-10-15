@@ -206,6 +206,71 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         /** Byte offsets of the indirect dispatch arguments in the control buffer (CONTROL_ARGS, CONTROL_SHADOW_ARGS). */
         private static final long ARGS = 4 * 4, SHADOW_ARGS = 8 * 4, TRACE_ARGS = 20 * 4;
         private static final boolean STATS = System.getProperty("chunkymetal.defines", "").contains("CHUNKYCL_HWRT_STATS");
+        /**
+         * Lanes (-Dchunkymetal.lanes): the pixels are split into this many parts with their own path
+         * state, each run as a whole pass in a command buffer on its own queue, so that the GPU can
+         * trace the rays of one lane while it shades another. On an M4 Pro the lanes do run at the
+         * same time but are slower than one (they only share the GPU), so the default is 1.
+         */
+        private static final int LANES = Math.max(1, Integer.getInteger("chunkymetal.lanes", 1));
+
+        /** The pixels of one lane and their path state. */
+        private static final class Lane {
+            /**
+             * The pass buffer of this lane (the size of the whole image; the lane only uses its
+             * pixels). Lanes do not share it, so that Metal does not order their command buffers
+             * one after the other.
+             */
+            final MetalBuffer output;
+            final int first;
+            final int pixels;
+            /** Path state (STATE_F floats, then STATE_I ints per path). */
+            final MetalBuffer state;
+            /** Control block (queue lengths, dispatch arguments, statistics), then the queues. */
+            final MetalBuffer work;
+            /**
+             * Per wave, bounce and trace round: first pixel, number of paths, bounce, paths the
+             * state buffers hold, input queue, input trace queue, last trace round, leaves
+             * wf_resolve marches.
+             */
+            final MetalBuffer[][][] waves;
+            final int[] counts;
+
+            Lane(long context, float[] passBuffer, int first, int pixels, int rayDepth) {
+                output = MetalBuffer.ofFloats(context, passBuffer);
+                this.first = first;
+                this.pixels = pixels;
+                long paths = Math.max(1, Math.min(pixels, WAVE_SIZE));
+                // STATE_F + STATE_I, CONTROL_SIZE and five queues in wavefront.c
+                state = new MetalBuffer(context, paths * (38 + 22) * 4);
+                work = new MetalBuffer(context, (32 + paths * 5) * 4);
+                int waveCount = (pixels + WAVE_SIZE - 1) / WAVE_SIZE;
+                int rounds = Math.max(1, TRACE_ROUNDS);
+                waves = new MetalBuffer[waveCount][rayDepth + 1][rounds];
+                counts = new int[waveCount];
+                for (int w = 0; w < waveCount; w++) {
+                    int start = first + w * WAVE_SIZE;
+                    counts[w] = Math.min(WAVE_SIZE, pixels - w * WAVE_SIZE);
+                    for (int d = 0; d <= rayDepth; d++) {
+                        for (int r = 0; r < rounds; r++) {
+                            waves[w][d][r] = MetalBuffer.ofInts(context, new int[] {
+                                    start, counts[w], d, (int) paths, d % 2, r % 2, r == rounds - 1 ? 1 : 0, RESOLVE_STEPS});
+                        }
+                    }
+                }
+            }
+
+            void close() {
+                output.close();
+                state.close();
+                work.close();
+                for (MetalBuffer[][] wave : waves) {
+                    for (MetalBuffer[] bounce : wave) {
+                        for (MetalBuffer b : bounce) b.close();
+                    }
+                }
+            }
+        }
 
         private final MetalContext metal = MetalContext.get();
         private final MetalSceneLoader sceneLoader = metal.sceneLoader;
@@ -213,22 +278,13 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         private final boolean needGenerate;
         private final MetalBuffer projectorType;
         private final MetalBuffer cameraSettings;
-        private final MetalBuffer buffer;
         private final MetalBuffer randomSeed;
         private final MetalBuffer bufferSpp;
         private final MetalBuffer canvasConfig;
         private final MetalBuffer rayDepthBuffer;
         private final MetalBuffer water;
         private final MetalBuffer atmosphere;
-        /** Path state (STATE_F floats, then STATE_I ints per path). */
-        private final MetalBuffer state;
-        /** Control block (queue lengths, dispatch arguments, statistics), then the queues. */
-        private final MetalBuffer work;
-        /**
-         * Per wave, bounce and trace round: first pixel, number of paths, bounce, paths the state
-         * buffers hold, input queue, input trace queue, last trace round, leaves wf_resolve marches.
-         */
-        private final MetalBuffer[][][] waves;
+        private final Lane[] lanes;
         private final int pixels;
         private final int rayDepth;
         private final long[] pipelines;
@@ -250,7 +306,6 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             cameraSettings = needGenerate
                     ? new MetalBuffer(context, 4L * CameraData.rayBufferFloats(scene))
                     : MetalBuffer.ofFloats(context, camera.settings);
-            buffer = MetalBuffer.ofFloats(context, passBuffer);
             randomSeed = MetalBuffer.ofInt(context, 0);
             bufferSpp = MetalBuffer.ofInt(context, 0);
             canvasConfig = MetalBuffer.ofInts(context, CameraData.canvasConfig(scene));
@@ -260,23 +315,12 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             atmosphere = MetalBuffer.ofInts(context, AtmosphereData.pack(scene));
             pixels = passBuffer.length / 3;
 
-            long paths = Math.min(pixels, WAVE_SIZE);
-            // STATE_F + STATE_I, CONTROL_SIZE and five queues in wavefront.c
-            state = new MetalBuffer(context, paths * (38 + 22) * 4);
-            work = new MetalBuffer(context, (32 + paths * 5) * 4);
-
-            int waveCount = (pixels + WAVE_SIZE - 1) / WAVE_SIZE;
-            int rounds = Math.max(1, TRACE_ROUNDS);
-            waves = new MetalBuffer[waveCount][rayDepth + 1][rounds];
-            for (int w = 0; w < waveCount; w++) {
-                int first = w * WAVE_SIZE;
-                int count = Math.min(WAVE_SIZE, pixels - first);
-                for (int d = 0; d <= rayDepth; d++) {
-                    for (int r = 0; r < rounds; r++) {
-                        waves[w][d][r] = MetalBuffer.ofInts(context,
-                                new int[] {first, count, d, (int) paths, d % 2, r % 2, r == rounds - 1 ? 1 : 0, RESOLVE_STEPS});
-                    }
-                }
+            int laneCount = Math.min(LANES, Math.max(1, pixels));
+            lanes = new Lane[laneCount];
+            for (int l = 0; l < laneCount; l++) {
+                int first = (int) ((long) pixels * l / laneCount);
+                int last = (int) ((long) pixels * (l + 1) / laneCount);
+                lanes[l] = new Lane(context, passBuffer, first, last - first, rayDepth);
             }
         }
 
@@ -297,7 +341,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             }
         }
 
-        private long[] buffers(long pipeline, MetalBuffer wave) {
+        private long[] buffers(long pipeline, Lane lane, MetalBuffer wave) {
             // In the order the wavefront kernels declare them (WF_PARAMS in wavefront.c).
             return tracing.buffers(pipeline, new long[] {
                     projectorType.handle,
@@ -330,10 +374,10 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     bufferSpp.handle,
                     canvasConfig.handle,
                     rayDepthBuffer.handle,
-                    buffer.handle,
+                    lane.output.handle,
 
-                    state.handle,
-                    work.handle,
+                    lane.state.handle,
+                    lane.work.handle,
                     wave.handle,
             });
         }
@@ -346,18 +390,18 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
         }
 
         /**
-         * One pass: per wave, generate (queues every path), per bounce prepare, the intersection of
-         * the queued paths, shade, then prepareShadow and shadow over the shadow queue, then finish.
-         * With hardware ray tracing the intersection runs in parts: begin, rounds of prepareTrace,
-         * trace and resolve, then intersectRest.
+         * One pass over a lane: per wave, generate (queues every path), per bounce prepare, the
+         * intersection of the queued paths, shade, then prepareShadow and shadow over the shadow
+         * queue, then finish. With hardware ray tracing the intersection runs in parts: begin,
+         * rounds of prepareTrace, trace and resolve, then intersectRest.
          */
-        private void pass(Dispatcher d) {
+        private void pass(Lane lane, Dispatcher d) {
             boolean split = tracing.hardware() && !Boolean.getBoolean("chunkymetal.noTraceSplit");
-            for (int w = 0; w < waves.length; w++) {
-                int count = Math.min(WAVE_SIZE, pixels - w * WAVE_SIZE);
-                d.direct(GENERATE, waves[w][0][0], count);
+            for (int w = 0; w < lane.waves.length; w++) {
+                int count = lane.counts[w];
+                d.direct(GENERATE, lane.waves[w][0][0], count);
                 for (int depth = 0; depth < rayDepth; depth++) {
-                    MetalBuffer wave = waves[w][depth][0];
+                    MetalBuffer wave = lane.waves[w][depth][0];
                     d.direct(PREPARE, wave, 1);
                     if (TRACE_PROBE_ON) d.indirect(TRACE_PROBE, wave, ARGS);
                     if (split) {
@@ -365,7 +409,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                         if (TRACE_MODE.equals("fused")) {
                             d.indirect(WORLD, wave, ARGS);
                         } else {
-                            for (MetalBuffer round : waves[w][depth]) {
+                            for (MetalBuffer round : lane.waves[w][depth]) {
                                 d.direct(PREPARE_TRACE, round, 1);
                                 d.indirect(TRACE, round, TRACE_ARGS);
                                 d.indirect(RESOLVE, round, TRACE_ARGS);
@@ -383,7 +427,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                     d.direct(PREPARE_SHADOW, wave, 1);
                     d.indirect(SHADOW, wave, SHADOW_ARGS);
                 }
-                d.direct(FINISH, waves[w][0][0], count);
+                d.direct(FINISH, lane.waves[w][0][0], count);
             }
         }
 
@@ -394,49 +438,58 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
 
             long[] textures = {sceneLoader.getTexturePalette().getAtlas().handle};
             if (BREAKDOWN) {
-                pass(new Dispatcher() {
+                // One lane after the other, every dispatch in its own command buffer.
+                for (Lane lane : lanes) {
+                    pass(lane, new Dispatcher() {
+                        @Override
+                        public void direct(int kernel, MetalBuffer wave, int threads) {
+                            kernelNanos[kernel] += Metal.dispatch(metal.context, pipelines[kernel],
+                                    buffers(pipelines[kernel], lane, wave), textures, threads);
+                        }
+
+                        @Override
+                        public void indirect(int kernel, MetalBuffer wave, long argsOffset) {
+                            kernelNanos[kernel] += Metal.dispatchIndirect(metal.context, pipelines[kernel],
+                                    buffers(pipelines[kernel], lane, wave), textures, GROUP_SIZE, lane.work.handle, argsOffset);
+                        }
+                    });
+                }
+                passes++;
+                return;
+            }
+            long[] batches = new long[lanes.length];
+            for (int l = 0; l < lanes.length; l++) {
+                Lane lane = lanes[l];
+                long batch = Metal.beginBatchOn(metal.context, l);
+                batches[l] = batch;
+                pass(lane, new Dispatcher() {
                     @Override
                     public void direct(int kernel, MetalBuffer wave, int threads) {
-                        kernelNanos[kernel] += Metal.dispatch(metal.context, pipelines[kernel],
-                                buffers(pipelines[kernel], wave), textures, threads);
+                        Metal.addDispatch(batch, pipelines[kernel], buffers(pipelines[kernel], lane, wave), textures, threads);
                     }
 
                     @Override
                     public void indirect(int kernel, MetalBuffer wave, long argsOffset) {
-                        kernelNanos[kernel] += Metal.dispatchIndirect(metal.context, pipelines[kernel],
-                                buffers(pipelines[kernel], wave), textures, GROUP_SIZE, work.handle, argsOffset);
+                        Metal.addDispatchIndirect(batch, pipelines[kernel], buffers(pipelines[kernel], lane, wave), textures,
+                                GROUP_SIZE, lane.work.handle, argsOffset);
                     }
                 });
-                passes++;
-                return;
             }
-            long batch = Metal.beginBatch(metal.context);
-            pass(new Dispatcher() {
-                @Override
-                public void direct(int kernel, MetalBuffer wave, int threads) {
-                    Metal.addDispatch(batch, pipelines[kernel], buffers(pipelines[kernel], wave), textures, threads);
-                }
-
-                @Override
-                public void indirect(int kernel, MetalBuffer wave, long argsOffset) {
-                    Metal.addDispatchIndirect(batch, pipelines[kernel], buffers(pipelines[kernel], wave), textures,
-                            GROUP_SIZE, work.handle, argsOffset);
-                }
-            });
-            gpuNanos += Metal.runBatch(batch);
+            gpuNanos += Metal.runBatches(batches);
             passes++;
         }
 
         @Override
         public void readBuffer(float[] passBuffer) {
-            buffer.readFloats(passBuffer);
+            for (Lane lane : lanes) {
+                Metal.readFloats(lane.output.handle, 4L * 3 * lane.first, passBuffer, 3 * lane.first, 3 * lane.pixels);
+            }
         }
 
         @Override
         public void close() {
             projectorType.close();
             cameraSettings.close();
-            buffer.close();
             randomSeed.close();
             bufferSpp.close();
             canvasConfig.close();
@@ -445,7 +498,11 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
             atmosphere.close();
             if (STATS) {
                 int[] counters = new int[16];
-                work.readInts(counters);
+                for (Lane lane : lanes) {
+                    int[] laneCounters = new int[16];
+                    lane.work.readInts(laneCounters);
+                    for (int k = 0; k < 16; k++) counters[k] += laneCounters[k];
+                }
                 long intersections = counters[12] & 0xFFFFFFFFL, calls = counters[13] & 0xFFFFFFFFL;
                 System.out.printf(java.util.Locale.ROOT, "METAL_HWRT_STATS worldIntersections=%d hardwareCalls=%d callsPerIntersection=%.3f%n",
                         intersections, calls, intersections == 0 ? 0.0 : (double) calls / intersections);
@@ -453,13 +510,7 @@ public class MetalPathTracingRenderer extends GpuPathTracingRenderer {
                 System.out.printf(java.util.Locale.ROOT, "METAL_HWRT_STATS queries=%d intersectionFunctionCalls=%d callsPerQuery=%.2f%n",
                         queries, functionCalls, queries == 0 ? 0.0 : (double) functionCalls / queries);
             }
-            state.close();
-            work.close();
-            for (MetalBuffer[][] wave : waves) {
-                for (MetalBuffer[] bounce : wave) {
-                    for (MetalBuffer b : bounce) b.close();
-                }
-            }
+            for (Lane lane : lanes) lane.close();
             tracing.close();
             if (PROFILE && passes > 0 && !BREAKDOWN) {
                 System.out.printf(java.util.Locale.ROOT, "METAL_PROFILE wavefront passes=%d gpuMsPerPass=%.2f%n", passes, gpuNanos / 1e6 / passes);

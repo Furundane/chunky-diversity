@@ -108,6 +108,16 @@ public final class Metal {
 
     public static native long runBatch(long batch);
 
+    /**
+     * A batch on another command queue (0 is the queue of {@link #beginBatch}). Batches on different
+     * queues, run together with {@link #runBatches}, may execute at the same time on the GPU, so
+     * they must not depend on each other.
+     */
+    public static native long beginBatchOn(long context, int queue);
+
+    /** Runs several batches together and frees them; returns the GPU time from the first start to the last end (ns). */
+    public static native long runBatches(long[] batches);
+
     /*
      * Indirect dispatches: the number of threadgroups of groupSize threads is read on the GPU from
      * the buffer `indirect` at byteOffset (3 uints: x, y, z), as written by an earlier dispatch.

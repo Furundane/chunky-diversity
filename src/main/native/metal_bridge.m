@@ -10,6 +10,8 @@
 @interface CMContext : NSObject
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
+// More queues for batches that run at the same time (beginBatchOn), created on first use.
+@property(nonatomic, strong) NSMutableArray<id<MTLCommandQueue>> *moreQueues;
 @end
 
 @implementation CMContext
@@ -439,6 +441,66 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_beginBatch(J
         batch.commandBuffer = [context.queue commandBuffer];
         batch.encoder = [batch.commandBuffer computeCommandEncoder];
         return toHandle(batch);
+    }
+}
+
+// A batch on command queue `queue` (0: the context's queue). Batches on different queues may run
+// at the same time on the GPU (see runBatches).
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_beginBatchOn(JNIEnv *env, jclass cls, jlong contextHandle, jint queue) {
+    @autoreleasepool {
+        CMContext *context = fromHandle(contextHandle);
+        id<MTLCommandQueue> commandQueue = context.queue;
+        if (queue > 0) {
+            if (context.moreQueues == nil) context.moreQueues = [NSMutableArray array];
+            while ((jint) context.moreQueues.count < queue) [context.moreQueues addObject:[context.device newCommandQueue]];
+            commandQueue = context.moreQueues[(NSUInteger) queue - 1];
+        }
+        CMBatch *batch = [CMBatch new];
+        batch.capture = false;
+        batch.commandBuffer = [commandQueue commandBuffer];
+        batch.encoder = [batch.commandBuffer computeCommandEncoder];
+        return toHandle(batch);
+    }
+}
+
+// Commits several batches together, waits for all of them and frees them. Returns the GPU time
+// from the first start to the last end in nanoseconds, or 0 with an exception if one failed.
+JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_runBatches(JNIEnv *env, jclass cls, jlongArray batchHandles) {
+    @autoreleasepool {
+        jsize count = (*env)->GetArrayLength(env, batchHandles);
+        jlong *handles = (*env)->GetLongArrayElements(env, batchHandles, NULL);
+        NSMutableArray<CMBatch *> *batches = [NSMutableArray array];
+        for (jsize i = 0; i < count; i++) {
+            CMBatch *batch = CFBridgingRelease((void *) (intptr_t) handles[i]);
+            [batch.encoder endEncoding];
+            [batch.commandBuffer commit];
+            [batches addObject:batch];
+        }
+        (*env)->ReleaseLongArrayElements(env, batchHandles, handles, JNI_ABORT);
+        CFTimeInterval start = INFINITY, end = 0;
+        NSString *failure = nil;
+        for (CMBatch *batch in batches) {
+            [batch.commandBuffer waitUntilCompleted];
+            if (batch.commandBuffer.status == MTLCommandBufferStatusError) {
+                failure = batch.commandBuffer.error.localizedDescription;
+            }
+            start = MIN(start, batch.commandBuffer.GPUStartTime);
+            end = MAX(end, batch.commandBuffer.GPUEndTime);
+        }
+        if (failure != nil) {
+            throwRuntime(env, [@"Kernel failed: " stringByAppendingString:failure]);
+            return 0;
+        }
+        if (getenv("CHUNKYMETAL_BATCH_TIMES") != NULL) {
+            // Diagnostic: when each command buffer ran on the GPU, relative to the first start (ms).
+            NSMutableString *line = [NSMutableString stringWithString:@"BATCH_TIMES"];
+            for (CMBatch *batch in batches) {
+                [line appendFormat:@" [%.2f..%.2f]", (batch.commandBuffer.GPUStartTime - start) * 1e3,
+                        (batch.commandBuffer.GPUEndTime - start) * 1e3];
+            }
+            fprintf(stderr, "%s\n", line.UTF8String);
+        }
+        return count == 0 ? 0 : (jlong) ((end - start) * 1e9);
     }
 }
 
