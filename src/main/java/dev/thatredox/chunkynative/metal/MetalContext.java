@@ -83,7 +83,7 @@ public class MetalContext {
         String key = function + ":" + String.join(",", defines);
         return renderPipelines.computeIfAbsent(key, k -> {
             long t0 = System.currentTimeMillis();
-            // Safe (IEEE) math to match OpenCL, which the kernel was written and tested against.
+            // Not fast math: the kernel relies on IEEE inf and NaN (see compileLibrary in metal_bridge.m).
             String source = KernelLoader.loadSource("kernel", "rayTracer.c", defines);
             long pipeline = Arrays.asList(defines).contains(HWRT_DEFINE)
                     ? Metal.compileRt(context, source, function, false, "HwRt_firstBlock")

@@ -96,13 +96,15 @@ JNIEXPORT jstring JNICALL Java_dev_thatredox_chunkynative_metal_Metal_deviceName
 static id<MTLLibrary> compileLibrary(JNIEnv *env, CMContext *context, jstring source, jboolean fastMath) {
     MTLCompileOptions *options = [MTLCompileOptions new];
     if (@available(macOS 15.0, *)) {
-        options.mathMode = fastMath ? MTLMathModeFast : MTLMathModeSafe;
-        // Experiment: CHUNKYMETAL_MATH=relaxed|fast overrides the math mode, CHUNKYMETAL_FUNCTIONS=fast the math functions.
+        // Relaxed math (reassociation, contraction) keeps IEEE inf and NaN, which the kernel relies on
+        // (e.g. 1 / direction in the slab tests). About 10% faster than safe math with the same harness
+        // results. Before macOS 15 there is only safe or fast math, so safe math is used there.
+        options.mathMode = fastMath ? MTLMathModeFast : MTLMathModeRelaxed;
+        // Diagnostics: CHUNKYMETAL_MATH=safe|relaxed|fast overrides the math mode.
         const char *math = getenv("CHUNKYMETAL_MATH");
+        if (math != NULL && strcmp(math, "safe") == 0) options.mathMode = MTLMathModeSafe;
         if (math != NULL && strcmp(math, "relaxed") == 0) options.mathMode = MTLMathModeRelaxed;
         if (math != NULL && strcmp(math, "fast") == 0) options.mathMode = MTLMathModeFast;
-        const char *functions = getenv("CHUNKYMETAL_FUNCTIONS");
-        if (functions != NULL && strcmp(functions, "fast") == 0) options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsFast;
     } else {
         options.fastMathEnabled = fastMath;
     }
@@ -360,9 +362,6 @@ static void encodeDispatch(JNIEnv *env, id<MTLComputeCommandEncoder> encoder, id
     }
     // Apple GPUs support non-uniform threadgroups, so the grid need not be a multiple of the group size.
     NSUInteger groupSize = MIN(pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger) threads);
-    // Experiment: CHUNKYMETAL_GROUP=n caps the threadgroup size.
-    const char *group = getenv("CHUNKYMETAL_GROUP");
-    if (group != NULL && atoi(group) > 0) groupSize = MIN(groupSize, (NSUInteger) atoi(group));
     [encoder dispatchThreads:MTLSizeMake((NSUInteger) threads, 1, 1)
        threadsPerThreadgroup:MTLSizeMake(groupSize, 1, 1)];
 }
@@ -762,12 +761,6 @@ JNIEXPORT jlong JNICALL Java_dev_thatredox_chunkynative_metal_Metal_buildBlockAc
         geometry.intersectionFunctionTableOffset = 0;
         MTLPrimitiveAccelerationStructureDescriptor *descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
         descriptor.geometryDescriptors = @[geometry];
-        // Experiment: CHUNKYMETAL_AS_USAGE=fast|min (macOS 26 build preferences).
-        if (@available(macOS 26.0, *)) {
-            const char *usage = getenv("CHUNKYMETAL_AS_USAGE");
-            if (usage != NULL && strcmp(usage, "fast") == 0) descriptor.usage = MTLAccelerationStructureUsagePreferFastIntersection;
-            if (usage != NULL && strcmp(usage, "min") == 0) descriptor.usage = MTLAccelerationStructureUsageMinimizeMemory;
-        }
         MTLAccelerationStructureSizes sizes = [device accelerationStructureSizesWithDescriptor:descriptor];
         size_t need = dataBytes + sizes.accelerationStructureSize + sizes.buildScratchBufferSize;
         if (need > budget || sizes.accelerationStructureSize > device.maxBufferLength) {

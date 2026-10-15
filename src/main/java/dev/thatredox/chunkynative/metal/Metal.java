@@ -52,7 +52,7 @@ public final class Metal {
      * Compiles Metal Shading Language source at runtime and returns a compute pipeline for one
      * kernel function. Throws RuntimeException with the compiler log on failure.
      *
-     * @param fastMath false for IEEE-conformant math, matching OpenCL's default
+     * @param fastMath true for fast math; false for relaxed math that keeps IEEE inf and NaN (safe math before macOS 15)
      */
     public static native long compile(long context, String source, String function, boolean fastMath);
 
