@@ -57,7 +57,7 @@ __kernel void render(
     scene.hwFunctions = hwFunctions;
     scene.hwWorld = true;
 #endif
-    scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
+    scene.waterOctree = Octree_createWithContent(waterOctreeData, waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.atmosphere = atmosphere;
     scene.fogMode = atmosphere[0];
@@ -245,7 +245,7 @@ __kernel void preview(
     scene.hwFunctions = hwFunctions;
     scene.hwWorld = true;
 #endif
-    scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth);
+    scene.waterOctree = Octree_createWithContent(waterOctreeData, waterOctreeDepth);
     scene.water = WaterSettings_new(waterSettings);
     scene.atmosphere = atmosphere;
     scene.fogMode = atmosphere[0];

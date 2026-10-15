@@ -208,6 +208,42 @@ public abstract class AbstractSceneLoader {
         }
     }
 
+    /**
+     * The kernel's header for an octree with bounds (Octree_createWithContent): depth, then the
+     * minimum and maximum corner of the blocks the kernel can hit, i.e. leaves that are not air or
+     * ANY_TYPE once mapped with {@code blockMapping}. Empty octrees get an empty box.
+     */
+    protected static int[] octreeHeader(int[] octree, int length, int depth, int[] blockMapping) {
+        int[] bounds = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE};
+        if (length > 0) addContentBounds(octree, 0, 0, 0, 0, depth, blockMapping, bounds);
+        if (bounds[0] > bounds[3]) {
+            return new int[] {depth, 0, 0, 0, 0, 0, 0};
+        }
+        return new int[] {depth, bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]};
+    }
+
+    private static void addContentBounds(int[] octree, int index, int x, int y, int z, int level, int[] blockMapping, int[] bounds) {
+        int value = octree[index];
+        if (value > 0) {
+            int half = 1 << (level - 1);
+            for (int c = 0; c < 8; c++) {
+                addContentBounds(octree, value + c, x + ((c >> 2) & 1) * half, y + ((c >> 1) & 1) * half, z + (c & 1) * half,
+                        level - 1, blockMapping, bounds);
+            }
+            return;
+        }
+        int type = -value;
+        int mapped = type < blockMapping.length ? blockMapping[type] : type;
+        if (mapped == 0 || mapped == 0x7FFFFFFE) return;  // Air and ANY_TYPE, as the kernel treats them
+        int size = 1 << level;
+        bounds[0] = Math.min(bounds[0], x);
+        bounds[1] = Math.min(bounds[1], y);
+        bounds[2] = Math.min(bounds[2], z);
+        bounds[3] = Math.max(bounds[3], x + size);
+        bounds[4] = Math.max(bounds[4], y + size);
+        bounds[5] = Math.max(bounds[5], z + size);
+    }
+
     /** Ints of octree converted per upload step, so the converted octree is never copied whole in memory. */
     protected static final int OCTREE_UPLOAD_CHUNK = 1 << 22;
 

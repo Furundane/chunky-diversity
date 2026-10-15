@@ -93,7 +93,7 @@ public class MetalSceneLoader extends AbstractSceneLoader {
         if (waterOctreeData != null) waterOctreeData.close();
         if (waterOctreeDepth != null) waterOctreeDepth.close();
         waterOctreeData = uploadOctree(octree, length, blockMapping);
-        waterOctreeDepth = MetalBuffer.ofInt(context, depth);
+        waterOctreeDepth = MetalBuffer.ofInts(context, octreeHeader(octree, length, depth, blockMapping));
         return true;
     }
 

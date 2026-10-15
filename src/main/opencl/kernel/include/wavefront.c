@@ -85,7 +85,7 @@
     __global const int* octreeDepth, \
     __global const int* octreeData, \
     WF_HWRT_PARAMS \
-    __global const int* waterOctreeDepth, \
+    __global const int* waterOctreeDepth, /* depth and bounds of the water, see Octree_createWithContent */ \
     __global const int* waterOctreeData, \
     __global const int* bPalette, \
     __global const int* quadModels, \
@@ -116,7 +116,7 @@
     Scene scene; \
     scene.materialPalette = MaterialPalette_new(matPalette); \
     scene.octree = Octree_create(octreeData, *octreeDepth); \
-    scene.waterOctree = Octree_create(waterOctreeData, *waterOctreeDepth); \
+    scene.waterOctree = Octree_createWithContent(waterOctreeData, waterOctreeDepth); \
     scene.water = WaterSettings_new(waterSettings); \
     scene.atmosphere = atmosphere; \
     scene.fogMode = atmosphere[0]; \
@@ -412,7 +412,7 @@ __kernel void wf_resolve(WF_PARAMS KERNEL_GID_PARAM) {
     int current = distance > start + eps ? 0 : WF_I(s, TRACE_I);
     bool last = wave[6] || queries >= 256;
     int march = Octree_march(scene.octree, textureAtlas, scene.blockPalette, scene.materialPalette,
-                             last ? 256 : wave[7], ray, &record, &sample, &distance, &current);
+                             last ? 256 : wave[7], HUGE_VALF, ray, &record, &sample, &distance, &current);
     if (march == MARCH_HIT) {
         WF_storeHit(s, true, record, sample);
     } else if (march == MARCH_MORE && !last) {

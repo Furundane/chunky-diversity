@@ -12,6 +12,7 @@
 typedef struct {
     __global const int* treeData;
     AABB bounds;
+    AABB content;  // Bounds of the blocks that can be hit; Octree_octreeIntersect only marches inside them
     int depth;
 } Octree;
 
@@ -20,6 +21,16 @@ Octree Octree_create(__global const int* treeData, int depth) {
     octree.treeData = treeData;
     octree.depth = depth;
     octree.bounds = AABB_new(0, 1<<depth, 0, 1<<depth, 0, 1<<depth);
+    octree.content = octree.bounds;
+    return octree;
+}
+
+// An octree with the bounds of its blocks: header = depth, min x, y, z, max x, y, z (see
+// AbstractSceneLoader.octreeHeader). Used for the water octree, which is mostly empty, so that rays
+// away from the water skip it.
+Octree Octree_createWithContent(__global const int* treeData, __global const int* header) {
+    Octree octree = Octree_create(treeData, header[0]);
+    octree.content = AABB_new(header[1], header[4], header[2], header[5], header[3], header[6]);
     return octree;
 }
 
@@ -60,8 +71,9 @@ int Octree_get(__private Octree* self, int x, int y, int z) {
 #define MARCH_MORE 2  // The steps ran out; *distMarch and *current say where to continue
 
 // The octree march from distance *distMarch along the ray, inside block *current (see below), for at
-// most `steps` leaves. On MARCH_MORE, *distMarch and *current are updated to continue from.
-int Octree_march(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int steps, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private float* distMarch, __private int* current) {
+// most `steps` leaves and up to maxDistance. On MARCH_MORE, *distMarch and *current are updated to
+// continue from.
+int Octree_march(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int steps, float maxDistance, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample, __private float* distMarch, __private int* current) {
     float3 invD = 1 / ray.direction;
     float3 offsetD = ray.direction * OFFSET;
     int depth = self.depth;
@@ -69,8 +81,8 @@ int Octree_march(Octree self, image2d_array_t atlas, BlockPalette palette, Mater
     int inside = *current;  // Block the ray is inside of
 
     for (int i = 0; i < steps; i++) {
-        if (dist > record->distance) {
-            // There's already been a closer intersection!
+        if (dist > record->distance || dist > maxDistance) {
+            // There's already been a closer intersection, or there is nothing more to hit
             return MARCH_DONE;
         }
 
@@ -130,18 +142,22 @@ int Octree_march(Octree self, image2d_array_t atlas, BlockPalette palette, Mater
 bool Octree_octreeIntersect(Octree self, image2d_array_t atlas, BlockPalette palette, MaterialPalette materialPalette, int drawDepth, Ray ray, __private IntersectionRecord* record, __private MaterialSample* sample) {
     float distMarch = 0;
     int current = ray.material;  // Block the ray is inside of
+    float3 invD = 1 / ray.direction;
 
-    // Check if we are in bounds
-    if (!AABB_inside(self.bounds, ray.origin)) {
-        // Attempt to intersect with the octree
-        float dist = AABB_quick_intersect(self.bounds, ray.origin, 1 / ray.direction);
+    // Start where the ray enters the blocks that can be hit (the whole octree but for the water
+    // octree, see Octree_createWithContent)
+    if (!AABB_inside(self.content, ray.origin)) {
+        float dist = AABB_quick_intersect(self.content, ray.origin, invD);
         if (isnan(dist) || dist < 0) {
             return false;
         } else {
             distMarch += dist + OFFSET;
         }
+        // Starting inside the octree, the march would have passed air before reaching its blocks.
+        if (AABB_inside(self.bounds, ray.origin)) current = 0;
     }
-    return Octree_march(self, atlas, palette, materialPalette, drawDepth, ray, record, sample, &distMarch, &current) == MARCH_HIT;
+    float maxDistance = AABB_exit(self.content, ray.origin, invD) + OFFSET;
+    return Octree_march(self, atlas, palette, materialPalette, drawDepth, maxDistance, ray, record, sample, &distMarch, &current) == MARCH_HIT;
 }
 
 bool _Octree_isWater(BlockPalette palette, int data) {

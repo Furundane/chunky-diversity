@@ -69,8 +69,10 @@ Material Material_cloud() {
 // where this intersection starts; ray decides how water is treated.
 bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, Ray ray, bool hit,
                                __private IntersectionRecord* record, __private MaterialSample* sample) {
+#ifndef CHUNKYCL_DIAG_NO_BVH  // Diagnostic: leave out the entities (timing only)
     hit |= Bvh_intersect(self.worldBvh, atlas, self.materialPalette, tempRay, record, sample);
     hit |= Bvh_intersect(self.actorBvh, atlas, self.materialPalette, tempRay, record, sample);
+#endif
 
 #ifdef CHUNKYCL_CLOUDS  // Only compiled in when the scene has clouds (see AtmosphereData.kernelDefines)
     // Clouds come after the blocks, which do not set the record flags, and before water, which does.
@@ -94,11 +96,13 @@ bool Scene_intersectAfterWorld(Scene self, image2d_array_t atlas, Ray tempRay, R
 #endif
 
     // Water is tested last so that only a closer water surface sets HIT_WATER.
+#ifndef CHUNKYCL_DIAG_NO_WATER  // Diagnostic: leave out the water octree (timing only)
     if (ray.flags & RAY_WATER) {
         hit |= Octree_exitWater(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
     } else {
         hit |= Octree_octreeIntersect(self.waterOctree, atlas, self.blockPalette, self.materialPalette, self.drawDepth, tempRay, record, sample);
     }
+#endif
     return hit;
 }
 

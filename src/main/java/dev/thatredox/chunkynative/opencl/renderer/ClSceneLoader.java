@@ -75,7 +75,7 @@ public class ClSceneLoader extends AbstractSceneLoader {
         if (waterOctreeData != null) waterOctreeData.close();
         if (waterOctreeDepth != null) waterOctreeDepth.close();
         waterOctreeData = uploadOctree(octree, length, blockMapping);
-        waterOctreeDepth = new ClIntBuffer(depth, context);
+        waterOctreeDepth = new ClIntBuffer(octreeHeader(octree, length, depth, blockMapping), context);
         return true;
     }
 
