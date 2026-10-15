@@ -2,6 +2,7 @@ package dev.thatredox.chunkynative.metal.renderer;
 
 import dev.thatredox.chunkynative.metal.Metal;
 import dev.thatredox.chunkynative.metal.MetalContext;
+import dev.thatredox.chunkynative.metal.MetalSettings;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -28,12 +29,12 @@ final class BlockTracing implements AutoCloseable {
 
     /**
      * water: allow tracing the water octree with hardware ray tracing (the wavefront kernels can),
-     * if -Dchunkymetal.hwWater=true. Off by default: on the test worlds it was no faster, since
-     * most of the water cost is in rays inside water, which still use the octree march.
+     * if {@link MetalSettings#hardwareWater} is on. Off by default: on the test worlds it was no
+     * faster, since most of the water cost is in rays inside water, which use the octree march.
      */
     BlockTracing(MetalSceneLoader loader, boolean water) {
         accel = Metal.retain(loader.blockAcceleration());
-        waterAccel = water && accel != 0 && Boolean.getBoolean("chunkymetal.hwWater")
+        waterAccel = water && accel != 0 && MetalSettings.hardwareWater()
                 ? Metal.retain(loader.waterAcceleration()) : 0;
     }
 
