@@ -21,6 +21,8 @@ rootProject {
                     "-Dharness.gpu=${p.findProperty('gpu') ?: 'ChunkyClRenderer'}", "-Dharness.out=${p.findProperty('harnessOut') ?: 'out'}",
                     "-Dchunkycl.profilePasses=true", "-Dchunkymetal.wavefront=${p.findProperty('wavefront') ?: ''}", "-Dchunkymetal.wavefrontBreakdown=${p.findProperty('breakdown') ?: 'false'}", "-Dchunkymetal.defines=${p.findProperty('defines') ?: ''}", "-Dchunkymetal.traceProbe=${p.findProperty('traceProbe') ?: 'false'}", "-Dchunkymetal.noTraceSplit=${p.findProperty('noTraceSplit') ?: 'false'}", "-Dchunkymetal.traceMode=${p.findProperty('traceMode') ?: 'split'}", "-Dchunkymetal.resolveSteps=${p.findProperty('resolveSteps') ?: '8'}", "-Dchunkymetal.hwWater=${p.findProperty('hwWater') ?: ''}", "-Dchunkymetal.lanes=${p.findProperty('lanes') ?: '1'}", "-Dchunkymetal.shadowSteps=${p.findProperty('shadowSteps') ?: '0'}", "-Dchunkymetal.traceRounds=${p.findProperty('traceRounds') ?: '3'}",
                     "-Dchunkymetal.blockAcceleration=${p.findProperty('blockAccel') ?: ''}", "-Dchunkycl.buildOptions=${p.findProperty('clOptions') ?: ''}"
+            // -PextraJvm="-Da=b -Dc=d" passes more system properties (diagnostics)
+            if (p.hasProperty('extraJvm')) t.jvmArgs p.property('extraJvm').toString().split(' ')
         }
         p.tasks.register('runHarness', JavaExec) { t ->
             common(t, 'harness.FeatureHarness')

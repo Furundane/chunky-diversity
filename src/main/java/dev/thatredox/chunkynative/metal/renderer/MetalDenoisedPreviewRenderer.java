@@ -36,6 +36,13 @@ public class MetalDenoisedPreviewRenderer implements Renderer {
     private static final int FULL_FRAMES = Math.max(1, Integer.getInteger("chunkymetal.previewFrames", 16));
     // -Dchunkycl.profilePasses=true prints the GPU time per frame when the preview stops.
     private static final boolean PROFILE = Boolean.getBoolean("chunkycl.profilePasses");
+    // Diagnostics: -Dchunkymetal.previewJitter=neg|pos|flipx|flipy|off (offset passed to MetalFX; off: no jitter),
+    // -Dchunkymetal.previewDump=<directory> writes every frame as a PNG (with -Dchunkymetal.previewDumpShown=true
+    // the buffer shown on the canvas after the frame, instead of the frame rendered).
+    private static final String JITTER = System.getProperty("chunkymetal.previewJitter", "neg");
+    private static final String DUMP = System.getProperty("chunkymetal.previewDump", "");
+    private static final boolean DUMP_SHOWN = Boolean.getBoolean("chunkymetal.previewDumpShown");
+    private int dumped = 0;
     /** Depth range for the denoiser's depth input. */
     private static final float NEAR = 0.1f, FAR = 4096;
 
@@ -100,7 +107,6 @@ public class MetalDenoisedPreviewRenderer implements Renderer {
             resetHistory = false;
         }
         renderedCamera = camera.settings;
-        int[] imageData = scene.getBackBuffer().data;
         long context = metal.context;
 
         try (BlockTracing tracing = new BlockTracing(metal.sceneLoader);
@@ -159,15 +165,34 @@ public class MetalDenoisedPreviewRenderer implements Renderer {
                 nanos[stage.scale * 2 - 2] += times[0];
                 nanos[stage.scale * 2 - 1] += times[1];
                 frames[stage.scale - 1]++;
+                // redrawScreen swaps the front and back buffers, so take the back buffer anew for every frame
+                // (writing to the one fetched before the loop would alternate the canvas between this frame
+                // and an old one).
+                int[] imageData = scene.getBackBuffer().data;
                 stage.argb.readInts(imageData);
+                if (!DUMP.isEmpty() && !DUMP_SHOWN) dumpFrame(imageData, stage);
                 drawCrosshair(scene, imageData);
                 manager.redrawScreen();
+                if (!DUMP.isEmpty() && DUMP_SHOWN) manager.withBufferedImage(bitmap -> dumpFrame(bitmap.data, stage));
                 boolean changed = postRender.getAsBoolean();
                 if (changed || frame == upscaled + FULL_FRAMES - 1) {
                     if (PROFILE) printProfile(nanos, frames);
                     return;
                 }
             }
+        }
+    }
+
+    private void dumpFrame(int[] imageData, Stage stage) {
+        try {
+            java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(stage.outWidth, stage.outHeight,
+                    java.awt.image.BufferedImage.TYPE_INT_RGB);
+            image.setRGB(0, 0, stage.outWidth, stage.outHeight, imageData, 0, stage.outWidth);
+            java.io.File dir = new java.io.File(DUMP);
+            dir.mkdirs();
+            javax.imageio.ImageIO.write(image, "png", new java.io.File(dir, String.format("%04d-s%d.png", dumped++, stage.scale)));
+        } catch (java.io.IOException e) {
+            Log.warn("Could not write a preview frame", e);
         }
     }
 
@@ -270,6 +295,7 @@ public class MetalDenoisedPreviewRenderer implements Renderer {
             // One subpixel offset for the whole frame (Halton 2, 3), read by the kernel after the camera settings.
             frameIndex = frameIndex % 64 + 1;
             float jx = halton(frameIndex, 2), jy = halton(frameIndex, 3);
+            if (JITTER.equals("off")) jx = jy = 0.5f;
             float[] settings = Arrays.copyOf(cameraSettings, 17);
             settings[15] = jx;
             settings[16] = jy;
@@ -295,6 +321,8 @@ public class MetalDenoisedPreviewRenderer implements Renderer {
             // MetalFX takes the offset back to the pixel center.
             scalerParams[0] = 0.5f - jx;
             scalerParams[1] = 0.5f - jy;
+            if (JITTER.equals("pos") || JITTER.equals("flipx")) scalerParams[0] = -scalerParams[0];
+            if (JITTER.equals("pos") || JITTER.equals("flipy")) scalerParams[1] = -scalerParams[1];
             scalerParams[2] = previousCamera == null ? 1 : 0;
             System.arraycopy(worldToView(cameraSettings), 0, scalerParams, 3, 16);
             System.arraycopy(viewToClip(cameraSettings, fullConfig[2], fullConfig[3]), 0, scalerParams, 19, 16);
